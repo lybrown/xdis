@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xdis — interactive 6502 disassembler</title>
+<link rel="stylesheet" href="css/xdis.css">
+</head>
+<body>
+<header class="toolbar">
+  <div class="brand" title="Interactive statically tracing 6502 disassembler">xdis</div>
+  <div class="group">
+    <button id="btn-open-bin" title="Open a binary: raw, Atari XEX, C64 PRG, SAP">Open binary…</button>
+    <button id="btn-open-proj" title="Open an .xdis.json project">Open project…</button>
+    <button id="btn-save-proj" title="Save project (Ctrl+S)">Save project</button>
+  </div>
+  <div class="group">
+    <button id="btn-import-dop" title="Merge directives from dis option files (.dop)">Import .dop…</button>
+    <button id="btn-export-dop" title="Save as a dis option file usable by the CLI">Export .dop</button>
+    <button id="btn-save-asm" class="primary" title="Save the generated assembly (Ctrl+Shift+S)">Save .asm</button>
+  </div>
+  <div class="group">
+    <button id="btn-undo" title="Undo (Ctrl+Z)">↶ Undo</button>
+    <button id="btn-redo" title="Redo (Ctrl+Y)">↷ Redo</button>
+  </div>
+  <div class="spacer"></div>
+  <div id="file-info" class="file-info"></div>
+  <button id="btn-new" title="Close this project and start over">New</button>
+  <button id="btn-help" title="Keyboard shortcuts (?)">?</button>
+</header>
+
+<main>
+  <section class="center">
+    <canvas id="map" title="Memory map — click to jump"></canvas>
+    <div id="listing" tabindex="0">
+      <div id="spacer"></div>
+      <div id="rows"></div>
+    </div>
+    <div id="empty" class="empty">
+      <div class="drop">
+        <h1>xdis</h1>
+        <p>An interactive, statically tracing 6502 disassembler.</p>
+        <p>Drop a <b>binary</b> (raw .bin/.rom/.mem, Atari .xex/.com, C64 .prg, .sap),
+          an <b>.xdis.json</b> project, or <b>.dop</b> option files here.</p>
+        <p><button id="btn-open-bin2" class="primary">Open binary…</button>
+           <button id="btn-open-proj2">Open project…</button></p>
+        <p class="hint">Mark code with <kbd>C</kbd>, data with <kbd>D</kbd>, name things with <kbd>N</kbd> —
+          the disassembly updates as you go. Press <kbd>?</kbd> for all keys.</p>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <nav class="tabs">
+      <button data-tab="inspect" class="on">Inspect</button>
+      <button data-tab="labels">Labels</button>
+      <button data-tab="directives">Directives</button>
+      <button data-tab="project">Project</button>
+      <button data-tab="problems">Problems <span id="problem-count" class="badge" hidden></span></button>
+    </nav>
+    <div class="panel" id="tab-inspect"></div>
+    <div class="panel" id="tab-labels" hidden>
+      <input id="label-filter" type="search" placeholder="Filter labels…" autocomplete="off">
+      <div class="label-kinds">
+        <label><input type="checkbox" id="lf-user" checked> named</label>
+        <label><input type="checkbox" id="lf-auto" checked> auto</label>
+        <label><input type="checkbox" id="lf-ext" checked> external</label>
+      </div>
+      <div id="label-list" class="list"></div>
+    </div>
+    <div class="panel" id="tab-directives" hidden>
+      <h3>Symbol sets</h3>
+      <div id="symbol-sets"></div>
+      <p><button id="btn-add-include">Add symbol .dop…</button></p>
+      <h3>Directives <span id="dir-count" class="dim"></span></h3>
+      <input id="dir-add" type="text" placeholder="Add: code start=$2000 · data tbl=$3000+FF · …" autocomplete="off" spellcheck="false">
+      <input id="dir-filter" type="search" placeholder="Filter directives…" autocomplete="off">
+      <div id="dir-list" class="list mono"></div>
+    </div>
+    <div class="panel" id="tab-project" hidden></div>
+    <div class="panel" id="tab-problems" hidden><div id="problem-list" class="list"></div></div>
+  </aside>
+</main>
+
+<footer class="status">
+  <span id="status-pos"></span>
+  <span id="status-msg"></span>
+  <span class="keys"><kbd>C</kbd> code <kbd>D</kbd> data <kbd>T</kbd> text <kbd>W</kbd> words
+    <kbd>A</kbd> pointers <kbd>U</kbd> undefine <kbd>N</kbd> name <kbd>;</kbd> comment
+    <kbd>G</kbd> goto <kbd>Enter</kbd> follow <kbd>Esc</kbd> back</span>
+</footer>
+
+<div id="ctx" class="ctx" hidden></div>
+<div id="tip" class="tip" hidden></div>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlg-form">
+    <h2 id="dlg-title"></h2>
+    <div id="dlg-body"></div>
+    <div class="dlg-buttons" id="dlg-buttons"></div>
+  </form>
+</dialog>
+
+<input type="file" id="file-bin" hidden>
+<input type="file" id="file-proj" accept=".json,application/json" hidden>
+<input type="file" id="file-dop" accept=".dop,.txt" multiple hidden>
+<input type="file" id="file-include" accept=".dop,.txt" multiple hidden>
+
+<script src="js/opcodes.js"></script>
+<script src="js/core.js"></script>
+<script src="js/symbols.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

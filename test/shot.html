@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- Screenshot helper: loads the app full-window, then optionally opens the
+     context menu (?menu=1) or a dialog (?key=n). -->
+<meta charset="utf-8">
+<style>html,body{margin:0;height:100%;overflow:hidden}iframe{border:0;width:100%;height:100%}</style>
+<iframe id="app"></iframe>
+<script>
+const q = new URLSearchParams(location.search);
+const frame = document.getElementById('app');
+frame.src = '../index.html?' + (q.get('app') || 'bin=test/out/ransack.xex&dop=symbols/hardware.dop');
+frame.onload = async () => {
+    const w = frame.contentWindow;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 100 && !(w.xdis && w.xdis.listing); i++) await sleep(50);
+    const S = w.xdis;
+    const line = +(q.get('line') || 0);
+    if (q.get('find')) {
+        const i = S.listing.lines.findIndex((l) => l.p.some((p) => p[1] === q.get('find')));
+        if (i >= 0) { S.cur = S.anchor = i; w.document.getElementById('listing').scrollTop = Math.max(0, i * 18 - 200); }
+    } else if (line) {
+        S.cur = S.anchor = line;
+    }
+    if (q.get('sel')) S.anchor = S.cur + +q.get('sel');
+    w.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowDown' }));
+    w.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowUp', shiftKey: !!q.get('sel') }));
+    if (q.get('tab')) w.document.querySelector(`[data-tab=${q.get('tab')}]`).click();
+    if (q.get('menu')) {
+        const row = w.document.querySelector('.row.cur');
+        const r = row.getBoundingClientRect();
+        row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: r.left + 300, clientY: r.top + 8 }));
+    }
+    if (q.get('key')) w.dispatchEvent(new w.KeyboardEvent('keydown', { key: q.get('key') }));
+};
+</script>

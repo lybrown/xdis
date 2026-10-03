@@ -1,0 +1,163 @@
+<!doctype html>
+<!-- Drives the real UI in an iframe. Serve the repo over http and open
+     test/ui-test.html, or run headless:
+       chrome --headless=new --dump-dom --virtual-time-budget=30000 http://localhost:8765/test/ui-test.html -->
+<meta charset="utf-8">
+<title>xdis UI test</title>
+<style>body{font:13px monospace} .fail{color:#c00} .pass{color:#080}</style>
+<pre id="log"></pre>
+<iframe id="app" width="1400" height="900"></iframe>
+<script>
+'use strict';
+const params = new URLSearchParams(location.search);
+const BIN = params.get('bin') || 'test/out/ransack.xex';
+const log = (cls, msg) => {
+    const el = document.getElementById('log');
+    el.innerHTML += `<span class="${cls}">${cls.toUpperCase()}</span> ${msg.replace(/</g, '&lt;')}\n`;
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let failures = 0;
+function check(name, ok, detail) {
+    if (!ok) failures++;
+    log(ok ? 'pass' : 'fail', name + (detail ? ' — ' + detail : ''));
+}
+
+(async () => {
+    const frame = document.getElementById('app');
+    frame.src = '../index.html?bin=' + BIN + '&dop=symbols/hardware.dop';
+    await new Promise((r) => frame.onload = r);
+    const w = frame.contentWindow;
+    const doc = w.document;
+    for (let i = 0; i < 100 && !(w.xdis && w.xdis.listing); i++) await sleep(50);
+    const S = w.xdis, X = w.XDis;
+    check('loaded', !!S.listing, S.listing && `${S.listing.lines.length} lines`);
+    const key = (k, extra) => w.dispatchEvent(new w.KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true }, extra)));
+    const asm = () => X.asmText(S.listing, S.project.options);
+    const lineAt = (s, a, kind) => S.listing.lines.findIndex((l) => l.s === s && l.a === a && (!kind || l.k === kind));
+    // Fill in the open prompt and press Enter; wait for the edit to land.
+    async function answer(text) {
+        for (let i = 0; i < 100 && !(doc.getElementById('dlg').open && doc.getElementById('dlg-input')); i++) await sleep(10);
+        const inp = doc.getElementById('dlg-input');
+        if (!inp || !doc.getElementById('dlg').open) { log('fail', `no dialog for "${text}"`); failures++; return false; }
+        const before = [S.listing, S.cur, doc.getElementById('status-msg').textContent].join();
+        inp.value = text;
+        inp.dispatchEvent(new w.Event('input'));
+        inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        for (let i = 0; i < 100 && [S.listing, S.cur, doc.getElementById('status-msg').textContent].join() === before; i++) await sleep(10);
+        return !doc.getElementById('dlg').open;
+    }
+    function cursorTo(i) {
+        S.cur = S.anchor = i;
+    }
+
+    // 1. rename an auto label from the keyboard; every reference updates
+    const target = S.listing.lines.find((l) => l.k === 'label' && /^s?\d*l[0-9A-F]{4}$/.test(l.p[0][1]) && l.x);
+    const oldName = target.p[0][1];
+    const refsBefore = asm().split(oldName).length - 1;
+    cursorTo(S.listing.lines.indexOf(target));
+    key('n');
+    check('rename dialog opens', doc.getElementById('dlg').open);
+    check('rename applied', await answer('my_routine'));
+    const text1 = asm();
+    check('label renamed everywhere', !text1.includes(oldName + '\t') && !new RegExp('\\b' + oldName + '\\b').test(text1) &&
+        text1.split('my_routine').length - 1 === refsBefore, `${refsBefore} refs`);
+
+    // 2. mark an instruction as data, then undo
+    const ins = S.listing.lines.findIndex((l) => l.k === 'ins' && l.n === 3);
+    const insLn = S.listing.lines[ins];
+    cursorTo(ins);
+    key('d');
+    let now = S.listing.lines[lineAt(insLn.s, insLn.a, 'data')];
+    check('D turns instruction into data', !!now && lineAt(insLn.s, insLn.a, 'ins') < 0);
+    check('data directive recorded', S.project.directives.some((d) => d.type === 'data' && d.addr === insLn.a && d.range === 2));
+    key('z', { ctrlKey: true });
+    check('undo restores instruction', lineAt(insLn.s, insLn.a, 'ins') >= 0 && !S.project.directives.some((d) => d.type === 'data' && d.addr === insLn.a));
+    key('y', { ctrlKey: true });
+    check('redo re-applies data', lineAt(insLn.s, insLn.a, 'data') >= 0);
+    key('z', { ctrlKey: true });
+
+    // 3. mark untraced data as code
+    const dataLn = S.listing.lines.find((l, i) => l.k === 'data' && l.n >= 4 &&
+        X.OPS[S.model.S[l.s - 1].seg.data[l.a - S.model.S[l.s - 1].seg.start]].mn === 'lda');
+    if (dataLn) {
+        cursorTo(S.listing.lines.indexOf(dataLn));
+        key('c');
+        check('C traces new code', lineAt(dataLn.s, dataLn.a, 'ins') >= 0, '$' + X.h4(dataLn.a));
+        check('C entry label created', S.listing.lines.some((l) => l.k === 'label' && l.a === dataLn.a));
+    } else {
+        log('skip', 'no untraced lda found');
+    }
+
+    // 4. comments
+    cursorTo(lineAt(insLn.s, insLn.a, 'ins'));
+    key(';');
+    await answer('hello comment');
+    check('comment shows in listing', S.listing.lines[lineAt(insLn.s, insLn.a, 'ins')].u === 'hello comment');
+    check('comment in asm', asm().includes('; hello comment') || asm().includes(' hello comment'));
+
+    // 5. goto by label
+    key('g');
+    await answer('my_routine');
+    check('goto label', S.listing.lines[S.cur].a === target.a, `cursor ${X.h4(S.listing.lines[S.cur].a)}`);
+
+    // 6. follow operand and go back
+    const jsr = S.listing.lines.findIndex((l) => l.k === 'ins' && l.p.some((p) => p[0] === 'sym' && p[2] !== undefined) && l.p[1][1] === 'jsr');
+    if (jsr >= 0) {
+        cursorTo(jsr);
+        key('Enter');
+        const landed = S.listing.lines[S.cur];
+        check('Enter follows jsr', landed.a === (S.listing.lines[jsr].p.find((p) => p[2] !== undefined)[2] & 0xFFFF));
+        key('Escape');
+        check('Esc goes back', S.cur === jsr);
+    }
+
+    // 7. constant naming on an immediate
+    const imm = S.listing.lines.findIndex((l) => l.k === 'ins' && l.p.some((p) => p[1] === '#'));
+    cursorTo(imm);
+    key('k');
+    const immLn = S.listing.lines[imm];
+    await answer('MYCONST');
+    const after = S.listing.lines[lineAt(immLn.s, immLn.a, 'ins')];
+    check('constant used in operand', after.p.some((p) => p[1] === 'MYCONST'), after.p.map((p) => p[1]).join(''));
+    check('constant equ emitted', /^MYCONST equ \$/m.test(asm()));
+
+    // 8. pointer table over two data bytes
+    const d2 = S.listing.lines.findIndex((l) => l.k === 'data' && l.n >= 2 && l.p[1] && l.p[1][1] === 'dta ');
+    if (d2 >= 0) {
+        const L2 = S.listing.lines[d2];
+        cursorTo(d2);
+        key('a');
+        const pl = S.listing.lines[lineAt(L2.s, L2.a, 'data')];
+        check('A makes pointer', pl && pl.p.some((p) => p[1] === 'a('), pl && pl.p.map((p) => p[1]).join(''));
+    }
+
+    // 9. output still exports and the .dop round trips through the parser
+    const dop = X.exportDop(S.project, S.model);
+    const back = X.dedupeImported(X.parseDop(dop).directives).map(X.directiveString);
+    check('dop round trip', JSON.stringify(back) === JSON.stringify(S.project.directives.map(X.directiveString)),
+        `${back.length} vs ${S.project.directives.length}`);
+    const proj = X.serializeProject(S.project, S.bytes, true);
+    const re = X.deserializeProject(proj);
+    check('project round trip', re.bytes.length === S.bytes.length &&
+        JSON.stringify(re.project.directives) === JSON.stringify(S.project.directives.map((d) => X.parseDirectiveLine(X.directiveString(d)))));
+
+    // 10. context menu offers the actions
+    const row = doc.querySelector('.row.cur');
+    row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));
+    const ctx = doc.getElementById('ctx');
+    check('context menu opens', !ctx.hidden && ctx.querySelectorAll('.mi').length >= 10, ctx.querySelectorAll('.mi').length + ' items');
+    ctx.hidden = true;
+
+    // 11. memory map and inspector render
+    check('inspector shows label input', !!doc.getElementById('in-label'));
+    check('problems badge', doc.getElementById('problem-count') !== null);
+
+    document.title = failures ? `FAIL ${failures}` : 'PASS';
+    log(failures ? 'fail' : 'pass', `${failures} failure(s)`);
+    // expose the final asm for inspection
+    const pre = document.createElement('pre');
+    pre.id = 'asm';
+    pre.textContent = asm().slice(0, 4000);
+    document.body.appendChild(pre);
+})().catch((e) => { failures++; log('fail', 'exception: ' + e.stack); document.title = 'FAIL'; });
+</script>
