@@ -66,6 +66,7 @@ Click a line or select a range (shift+arrows or drag), then:
 | `;` `:` | Line comment, or block comment above the line |
 | `O` | Operand override, e.g. `#<buffer` |
 | `K` | Name an immediate constant (like `dis -C`) |
+| `R` | Relocate: the bytes are loaded here but run elsewhere (`org r:`) |
 | `Enter` | Follow the operand (or double-click / Ctrl+click a symbol) |
 | click | An address in an `Access:` or `Callers:` comment jumps to that instruction |
 | `Esc`, `Alt+←/→` | Navigate back / forward |
@@ -84,6 +85,25 @@ are tagged *no effect*, *name only* (a plain label would do) or *format only*
 **together** without changing what gets traced; the check is greedy, so when
 two directives make each other redundant only one of them is tagged. Tick
 *Only show directives not needed for tracing* to review them.
+
+Relocated code
+--------------
+
+Loaders often copy code somewhere else before running it, e.g. to zero page or
+to RAM under a ROM. Select the block and press `R` (or use `relocate $5600+1FFF
+$A000` in the Directives panel) to disassemble it at its run address. Labels,
+branches, callers and the memory map then use the run address. The output
+places the bytes where they are loaded, using `org r:$A000` for xasm or
+`org $A000,*` for MADS, followed by a plain `org` back to the load address.
+
+When a relocation is added, directives on its load addresses move to the
+matching run addresses. Removing it moves them back. Go to (`G`) accepts
+either a run address or a load address.
+
+xdis also looks for copy loops (`lda src,x` / `sta dst,x` / `dex` / `bpl`,
+and page copies through zero page pointers such as `lda (p),y` / `sta (q),y`)
+whose destination is later called or jumped to. It lists each one in Problems
+as a suggestion; click it to review and apply the relocation.
 
 The *Problems* panel lists load, trace and label warnings. Click one to
 jump to the address it concerns, or to the directive that caused it.
@@ -110,6 +130,8 @@ test file. Where xdis intentionally differs:
 * Contiguous or truncated XEX segments keep their original headers (xasm
   would otherwise merge them).
 * The MADS output uses explicit segment headers and `.a` instead of `a:`.
+* Forward references to zero page labels get `z:` in xasm output, because
+  xasm would otherwise assemble them as absolute (dis has the same issue).
 
 Code layout
 -----------

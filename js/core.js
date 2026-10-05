@@ -233,11 +233,11 @@
     // carried through .dop files as ";xdis ..." comment lines.
 
     const CLI_TYPES = ['code', 'data', 'vector', 'constant', 'address', 'codeptr'];
-    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand'];
+    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate'];
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
-    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1 };
+    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1 };
 
     const ALIASES = {
         c: 'code', d: 'data', C: 'constant', v: 'vector', A: 'address',
@@ -279,6 +279,7 @@
     }
 
     function directiveString(d) {
+        if (d.type === 'relocate') return `relocate ${specString(d)} $${hx(d.run)}`;
         if (d.type === 'comment' || d.type === 'note' || d.type === 'operand') {
             const loc = (d.seg ? d.seg + ':' : '') + '$' + hx(d.addr);
             return `${d.type} ${loc} ${d.text.replace(/\\/g, '\\\\').replace(/\n/g, '\\n')}`;
@@ -295,6 +296,16 @@
             if (!t) throw new Error(`Bad ${type}: ${m[2]}`);
             const text = (t[3] || '').replace(/\\(n|\\)/g, (_, c) => (c === 'n' ? '\n' : '\\'));
             return { type, name: null, seg: t[1] ? +t[1] : 0, addr: parseInt(t[2], 16) & 0xFFFF, range: 0, text };
+        }
+        if (type === 'relocate') {
+            // relocate [name=][seg:]$LOAD+LEN-1 $RUN
+            const r = /^(\S+)\s+\$?([0-9a-fA-F]{1,4})$/.exec(m[2]);
+            if (!r) throw new Error(`Bad relocate: ${m[2]} (expected e.g. relocate $5600+1FFF $A000)`);
+            const d = parseSpec(type, r[1]);
+            if (d.hi !== undefined) throw new Error('relocate takes a single address range');
+            d.run = parseInt(r[2], 16);
+            if (d.run + d.range > 0xFFFF) throw new Error(`relocate: $${hx(d.run)}+${hx(d.range)} runs past $FFFF`);
+            return d;
         }
         if (CLI_TYPES.includes(type) || EXT_TYPES.includes(type)) {
             return parseSpec(type, m[2]);
@@ -435,12 +446,77 @@
         };
     }
 
+    // Split relocated blocks ("org r:") out of the segments that load them.
+    // Each block becomes a piece: a segment in its own right whose start is
+    // the run address, appended after the real segments. Its load range is a
+    // hole in the parent segment.
+    function relocations(img, directives, warn) {
+        const real = img.segments;
+        const loadOwner = new Int16Array(MEM);
+        for (const s of real) loadOwner.fill(s.index, s.start, s.end + 1);
+        const pieces = [];
+        for (const d of directives) {
+            if (d.type !== 'relocate') continue;
+            const parent = d.seg ? real[d.seg - 1] : real[loadOwner[d.addr] - 1];
+            if (!parent || d.addr < parent.start || d.addr + d.range > parent.end) {
+                warn(`relocate ${specString(d)}: the block must lie within one loaded segment`, undefined, d);
+                continue;
+            }
+            const len = d.range + 1;
+            const clash = pieces.find((p) => p.parent === parent.index && d.addr <= p.load + p.data.length - 1 && p.load <= d.addr + d.range);
+            if (clash) {
+                warn(`relocate ${specString(d)} overlaps relocate ${specString(clash.dir)}`, undefined, d);
+                continue;
+            }
+            const off = d.addr - parent.start;
+            pieces.push({
+                index: real.length + pieces.length + 1,
+                start: d.run, end: d.run + d.range,
+                data: parent.data.subarray(off, off + len),
+                ffff: false, reloc: true, load: d.addr, parent: parent.index, dir: d,
+            });
+        }
+        const holesOf = new Map();
+        for (const p of pieces) {
+            if (!holesOf.has(p.parent)) holesOf.set(p.parent, []);
+            holesOf.get(p.parent).push(p);
+        }
+        for (const list of holesOf.values()) list.sort((x, y) => x.load - y.load);
+        // Directives on load addresses inside a block apply to the block at
+        // its run address.
+        const toRun = (d) => {
+            if (d.type === 'relocate') return d;
+            for (const p of pieces) {
+                const n = p.data.length;
+                if (d.addr < p.load || d.addr >= p.load + n) continue;
+                if (d.seg ? d.seg !== p.parent : loadOwner[d.addr] !== p.parent) continue;
+                const t = Object.assign({}, d, { addr: p.start + d.addr - p.load, seg: d.seg ? p.index : 0, orig: d });
+                if (d.hi !== undefined && d.hi >= p.load && d.hi < p.load + n) t.hi = p.start + d.hi - p.load;
+                return t;
+            }
+            return d;
+        };
+        return { pieces, holesOf, loadOwner, toRun };
+    }
+
     function analyze(img, directives, opts) {
-        const segs = img.segments;
+        // Each warning is {msg, k?: address key, dir?: directive text} so the
+        // UI can jump to where it applies.
+        const warnings = [];
+        const warn = (msg, k, d) => warnings.push({ msg, k, dir: d && d.type in DIR_KINDS ? directiveString(d) : undefined });
+        const real = img.segments;
+        const R = relocations(img, directives, warn);
+        directives = directives.map(R.toRun);
+        const segs = real.concat(R.pieces);
+        // load order: each segment followed by the blocks relocated out of it
+        const order = [];
+        for (const s of real) order.push(s, ...(R.holesOf.get(s.index) || []));
         const finalOwner = new Int16Array(MEM);
         const cover = new Uint8Array(MEM);
-        for (const s of segs) {
+        for (const s of order) {
+            const holes = R.holesOf.get(s.index) || [];
             for (let a = s.start; a <= s.end; a++) {
+                if (holes.length && holes.some((p) => a >= p.load && a < p.load + p.data.length)) continue;
                 finalOwner[a] = s.index;
                 if (cover[a] < 255) cover[a]++;
             }
@@ -452,10 +528,6 @@
             fmt: new Uint8Array(s.data.length),   // FMT.* for user data / pointers
             ptr: new Map(),                       // offset -> {t, ts, part, other}
         }));
-        // Each warning is {msg, k?: address key, dir?: directive text} so the
-        // UI can jump to where it applies.
-        const warnings = [];
-        const warn = (msg, k, d) => warnings.push({ msg, k, dir: d && d.type in DIR_KINDS ? directiveString(d) : undefined });
         const resolveSeg = (d, a) => (d.seg && d.seg <= segs.length ? d.seg : d.seg ? -1 : finalOwner[a]);
         const segOf = (k) => S[keySeg(k) - 1];
 
@@ -660,11 +732,18 @@
         const auto = img.entries.map((e) => ({ type: 'code', name: e.name || null, seg: 0, addr: e.addr, range: 0 }));
 
         let run = null;
-        for (const s of segs) {
+        for (const s of real) {
             visited.fill(0);
             mem.set(s.data, s.start);
             owner.fill(s.index, s.start, s.end + 1);
+            const pieces = R.holesOf.get(s.index) || [];
+            for (const p of pieces) owner.fill(0, p.load, p.load + p.data.length);
+            for (const p of pieces) {
+                mem.set(p.data, p.start);
+                owner.fill(p.index, p.start, p.end + 1);
+            }
             enter(bySeg.get(s.index) || []);
+            for (const p of pieces) enter(bySeg.get(p.index) || []);
             if (s.run !== undefined) run = s;
             if (s.ini !== undefined) {
                 pointer(0x2E2, 0x2E3, { type: 'ini', addr: 0x2E2, range: 0 });
@@ -676,7 +755,7 @@
             pointer(0x2E0, 0x2E1, { type: 'run', addr: 0x2E0, range: 0 });
             trace(run.run, `run_segment${run.index}`);
         }
-        if (!traced && img.multi && segs.length) trace(segs[0].start, 'COM');
+        if (!traced && img.multi && real.length) trace(real[0].start, 'COM');
         enter(auto.concat(bySeg.get(0) || []));
         for (const d of auto) {
             if (d.name) addLabel(key(finalOwner[d.addr], d.addr), d.name, 0, 0, d);
@@ -701,9 +780,114 @@
             return !!(T && T.ilen[keyAddr(k) - T.seg.start]);
         }
 
+        for (const sg of findRelocations()) {
+            warnings.push({
+                msg: `Code at $${h4(sg.dir.addr)}-$${h4(sg.dir.addr + sg.dir.range)} is copied to $${h4(sg.dir.run)} ` +
+                    `by the loop at $${h4(keyAddr(sg.at))} and run there — click to relocate it`,
+                k: sg.at, suggest: sg.dir,
+            });
+        }
+
+        // Find copy loops that move code somewhere it is then called or
+        // jumped to, and suggest a relocation for each:
+        //   lda SRC,x / sta DST,x / dex / bpl|bne       (indexed, e.g. mva:rpl)
+        //   lda (p),y / sta (q),y / iny / bne ... inc p+1 / inc q+1 / lda q+1 / cmp #END / bne
+        function findRelocations() {
+            const out = [];
+            for (const T of S) {
+                const ins = [];
+                const data = T.seg.data;
+                for (let o = 0; o < T.ilen.length; o++) {
+                    if (!T.ilen[o]) continue;
+                    const op = OPS[data[o]];
+                    ins.push({ a: T.seg.start + o, op, lo: data[o + 1], hi: data[o + 2], w: data[o + 1] | (data[o + 2] << 8) });
+                }
+                for (let j = 0; j + 3 < ins.length; j++) {
+                    const s1 = ins[j], s2 = ins[j + 1];
+                    if (s1.op.mn !== 'lda' || s2.op.mn !== 'sta' || s1.op.mode !== s2.op.mode) continue;
+                    let found = null;
+                    if (s1.op.mode === 'abx' || s1.op.mode === 'aby') found = indexedCopy(ins, j);
+                    else if (s1.op.mode === 'izy') found = pointerCopy(ins, j);
+                    if (!found) continue;
+                    const { load, len, run } = found;
+                    if (len < 16 || load === run || load + len > MEM || run + len > MEM) continue;
+                    const par = R.loadOwner[load];
+                    if (!par || R.loadOwner[load + len - 1] !== par) continue;
+                    if (R.pieces.some((p) => p.parent === par && load < p.load + p.data.length && p.load < load + len)) continue;
+                    // the copy must be entered: something calls or jumps into it
+                    let entered = false;
+                    for (const [k, r] of refs) {
+                        const a = keyAddr(k);
+                        if (a >= run && a < run + len && r.callers.some((c) => typeof c === 'number')) { entered = true; break; }
+                    }
+                    if (!entered) continue;
+                    const cover1 = real.filter((x) => load >= x.start && load <= x.end).length;
+                    out.push({
+                        at: key(T.seg.index, s1.a),
+                        dir: { type: 'relocate', name: null, seg: cover1 > 1 ? par : 0, addr: load, range: len - 1, run },
+                    });
+                }
+            }
+            return out;
+        }
+
+        function indexedCopy(ins, j) {
+            const s1 = ins[j], s2 = ins[j + 1];
+            const reg = s1.op.mode === 'abx' ? 'x' : 'y';
+            const step = ins[j + 2], br = ins[j + 3];
+            if (!step || !br || !br.op.branch) return null;
+            const back = (br.a + 2 + (br.lo < 128 ? br.lo : br.lo - 256)) & 0xFFFF;
+            if (back > s1.a || back < s1.a - 4) return null;
+            let n = null;
+            for (let b = j - 1; b >= Math.max(0, j - 6); b--) {
+                if (ins[b].op.mn === 'ld' + reg && ins[b].op.mode === 'imm') { n = ins[b].lo; break; }
+            }
+            if (n === null) return null;
+            if (step.op.mn === 'de' + reg && br.op.mn === 'bpl') return { load: s1.w, run: s2.w, len: n + 1 };
+            if (step.op.mn === 'de' + reg && br.op.mn === 'bne') return { load: s1.w + 1, run: s2.w + 1, len: n };
+            return null;
+        }
+
+        function pointerCopy(ins, j) {
+            const s1 = ins[j], s2 = ins[j + 1];
+            const p = s1.lo, q = s2.lo;
+            const iny = ins[j + 2], br = ins[j + 3];
+            if (!iny || iny.op.mn !== 'iny' || !br || br.op.mn !== 'bne') return null;
+            // track immediates stored into zero page before the loop
+            const zp = new Map();
+            let acc = null;
+            for (let b = Math.max(0, j - 30); b < j; b++) {
+                const x = ins[b];
+                if (x.op.mn === 'lda') acc = x.op.mode === 'imm' ? x.lo : null;
+                else if (x.op.mn === 'sta' && x.op.mode === 'zp') zp.set(x.lo, acc);
+                else if (x.op.mn === 'sta' && x.op.mode === 'abs' && x.hi === 0) zp.set(x.lo, acc);
+                else if (x.op.branch || x.op.mn === 'jsr' || x.op.mn === 'jmp') acc = null;
+            }
+            const val = (z) => (zp.get(z) != null && zp.get(z + 1) != null ? zp.get(z) | (zp.get(z + 1) << 8) : null);
+            const src = val(p), dst = val(q);
+            if (src === null || dst === null) return null;
+            // end condition: lda p+1|q+1 / cmp #END shortly after
+            for (let b = j + 4; b < Math.min(ins.length - 1, j + 12); b++) {
+                const x = ins[b], c = ins[b + 1];
+                if (x.op.mn !== 'lda' || (x.op.mode !== 'zp' && x.op.mode !== 'abs') || c.op.mn !== 'cmp' || c.op.mode !== 'imm') continue;
+                if (x.lo === q + 1) return { load: src, run: dst, len: ((c.lo << 8) - dst) & 0xFFFF };
+                if (x.lo === p + 1) return { load: src, run: dst, len: ((c.lo << 8) - src) & 0xFFFF };
+            }
+            return null;
+        }
+
+        // Run address key for a load address inside a relocated block.
+        function loadToRun(a) {
+            for (const p of R.pieces) {
+                if (a >= p.load && a < p.load + p.data.length) return key(p.index, p.start + a - p.load);
+            }
+            return null;
+        }
+
         return {
             img, opts, S, mem, finalOwner, cover, refs, need, labels, names, consts,
             comments, notes, operands, warnings, labelAt, isCodeStart, segOf,
+            pieces: R.pieces, holesOf: R.holesOf, loadOwner: R.loadOwner, mapDirective: R.toRun, loadToRun,
         };
     }
 
@@ -722,6 +906,7 @@
         const used = new Map();       // base label name -> key, for externs
         const usedConsts = new Map();
         const defined = new Set();
+        const forwardZ = [];          // [part, label] needing z: if defined later
         const problems = model.warnings.slice();
         const xasm = opts.syntax !== 'mads';
         const segPrefix = img.multi;
@@ -730,7 +915,10 @@
             if (typeof k === 'string') return k;
             const l = opts.labels && model.labelAt(k);
             if (l && !l.off) return l.name;
-            return (segPrefix ? keySeg(k) + ':' : '') + h4(keyAddr(k));
+            const T = S[keySeg(k) - 1];
+            // relocated code needs no segment unless its run address is ambiguous
+            const pre = segPrefix && !(T && T.seg.reloc && model.cover[keyAddr(k)] <= 1);
+            return (pre ? keySeg(k) + ':' : '') + h4(keyAddr(k));
         }
         function xrefs(k, which) {
             const r = refs.get(k);
@@ -821,7 +1009,14 @@
             l = sym(ts, tgt);
             const tk = key(ts, tgt);
             const v = l ? ['sym', l.name, tk] : ['num', val, tk];
-            const ab = xasm && forceAbs(op, hi) ? [['pun', 'a:']] : [];
+            let ab = xasm && forceAbs(op, hi) ? [['pun', 'a:']] : [];
+            if (xasm && l && (op.mode === 'zp' || op.mode === 'zpx' || op.mode === 'zpy') && !defined.has(l.base)) {
+                // xasm treats a label it hasn't seen yet as absolute; if the
+                // label turns out to be defined later, force zero page.
+                const z = ['pun', ''];
+                forwardZ.push([z, l.base]);
+                ab = [z];
+            }
             switch (op.mode) {
                 case 'zpx': case 'abx': return ab.concat([v, ['pun', ',x']]);
                 case 'zpy': case 'aby': return ab.concat([v, ['pun', ',y']]);
@@ -853,11 +1048,32 @@
             });
         }
 
+        // A segment's body, with any relocated blocks emitted inline where
+        // they are loaded: "org r:RUN" (xasm) or "org RUN,*" (MADS), then a
+        // plain org back to the load address after the block.
         function segmentBody(T) {
             const seg = T.seg;
-            const { start, end, data } = seg;
+            let a = seg.start;
+            for (const p of model.holesOf.get(seg.index) || []) {
+                if (p.load > a) bodyRange(T, a, p.load - 1);
+                const n = p.data.length;
+                lines.push({
+                    k: 'dir', s: p.index, a: p.start, n: 0,
+                    p: [['dir', `${IND}org ${xasm ? 'r:' : ''}$${h4(p.start)}${xasm ? '' : ',*'}`]],
+                    c: `relocated: loaded at ${h4(p.load)}-${h4(p.load + n - 1)}, runs at ${h4(p.start)}-${h4(p.end)}`,
+                });
+                bodyRange(S[p.index - 1], p.start, p.end);
+                a = p.load + n;
+                if (a <= seg.end) dir(`org $${h4(a)}`, 'end of relocated block');
+            }
+            if (a <= seg.end) bodyRange(T, a, seg.end);
+        }
+
+        function bodyRange(T, from, end) {
+            const seg = T.seg;
+            const { start, data } = seg;
             const perLine = Math.max(1, opts.dataPerLine | 0);
-            for (let a = start; a <= end;) {
+            for (let a = from; a <= end;) {
                 const off = a - start;
                 const len = T.ilen[off];
                 const bitjmp = data[off] === 0x2C && a + 1 <= end && T.ilen[off + 1] &&
@@ -968,6 +1184,7 @@
         let hOff = false;
         for (const T of S) {
             const seg = T.seg;
+            if (seg.reloc) continue;   // emitted inside its parent
             const contiguous = seg.start === prevEnd + 1;
             prevEnd = seg.end;
             if (img.multi) {
@@ -1020,6 +1237,8 @@
                 dir('dta ' + Array.from(img.extra.subarray(i, i + 8), (b) => '$' + h2(b)).join(','));
             }
         }
+
+        for (const [z, base] of forwardZ) if (defined.has(base)) z[1] = 'z:';
 
         // --- externs and constants go at the top
         const head = [];
@@ -1121,9 +1340,9 @@
     function setName(dirs, seg, addr, name, labelInfo) {
         let out = dirs.slice();
         // Rename the directive that defines the existing exact label, if it is ours.
-        if (labelInfo && labelInfo.user && labelInfo.dir && out.includes(labelInfo.dir) && !labelInfo.off &&
-            labelInfo.dir.addr === addr) {
-            const i = out.indexOf(labelInfo.dir);
+        const own = labelInfo && labelInfo.dir && (labelInfo.dir.orig || labelInfo.dir);
+        if (labelInfo && labelInfo.user && own && out.includes(own) && !labelInfo.off && labelInfo.dir.addr === addr) {
+            const i = out.indexOf(own);
             if (!name && out[i].type === 'label') out.splice(i, 1);
             else out[i] = Object.assign({}, out[i], { name: name || null });
             return out;
@@ -1190,6 +1409,47 @@
             !(d.hi !== undefined && (d.seg || 0) === seg && d.addr >= lo && d.addr <= hi));
     }
 
+    // Add relocation d and move the directives on its load addresses to the
+    // matching run addresses, so edits made on the relocated code line up.
+    function addRelocation(dirs, img, d) {
+        const real = img.segments;
+        const loadOwner = new Int16Array(MEM);
+        for (const s of real) loadOwner.fill(s.index, s.start, s.end + 1);
+        const parent = d.seg || loadOwner[d.addr];
+        const n = d.range + 1;
+        const pieceIndex = real.length + dirs.filter((x) => x.type === 'relocate').length + 1;
+        const loaded = (a) => real.some((s) => a >= s.start && a <= s.end);
+        const inside = (x) => x.type !== 'relocate' && x.addr >= d.addr && x.addr < d.addr + n &&
+            (x.seg ? x.seg === parent : loadOwner[x.addr] === parent);
+        const out = dirs.map((x) => {
+            if (!inside(x)) return x;
+            const ra = d.run + x.addr - d.addr;
+            const nx = Object.assign({}, x, { addr: ra, seg: loaded(ra) ? pieceIndex : 0 });
+            if (x.hi !== undefined && x.hi >= d.addr && x.hi < d.addr + n) nx.hi = d.run + x.hi - d.addr;
+            return nx;
+        });
+        out.push(d);
+        return out;
+    }
+
+    // Remove relocation d, moving directives on its run addresses back to
+    // the load addresses.
+    function removeRelocation(dirs, model, d) {
+        const p = model.pieces.find((x) => x.dir === d);
+        const out = dirs.filter((x) => x !== d);
+        if (!p) return out;
+        const real = model.img.segments;
+        const loadedBy = (a) => real.filter((s) => a >= s.start && a <= s.end).length;
+        return out.map((x) => {
+            if (x.type === 'relocate' || x.addr < p.start || x.addr > p.end) return x;
+            if ((x.seg || model.finalOwner[x.addr]) !== p.index) return x;
+            const la = p.load + x.addr - p.start;
+            const nx = Object.assign({}, x, { addr: la, seg: loadedBy(la) > 1 ? p.parent : 0 });
+            if (x.hi !== undefined && x.hi >= p.start && x.hi <= p.end) nx.hi = p.load + x.hi - p.start;
+            return nx;
+        });
+    }
+
     function setText(dirs, type, seg, addr, text) {
         const out = dirs.filter((d) => !(d.type === type && d.addr === addr && (d.seg || 0) === seg));
         if (text) out.push({ type, name: null, seg, addr, range: 0, text });
@@ -1239,7 +1499,7 @@
     }
 
     // Directive types that can change which bytes are traced as code.
-    const TRACE_TYPES = ['code', 'data', 'text', 'word', 'vector', 'address', 'codeptr'];
+    const TRACE_TYPES = ['code', 'data', 'text', 'word', 'vector', 'address', 'codeptr', 'relocate'];
 
     // True when two analyses have the same instructions in every segment.
     function sameCode(a, b) {
@@ -1275,7 +1535,7 @@
             step() {
                 if (i >= order.length) return null;
                 const d = order[i++];
-                const removable = !touchesLoaded(model, d) ||
+                const removable = (d.type !== 'relocate' && !touchesLoaded(model, model.mapDirective(d))) ||
                     sameCode(model, analyze(img, all.filter((x) => x !== d && !removed.has(x)), project.options));
                 if (removable) removed.add(d);
                 return { d, removable };
@@ -1332,7 +1592,7 @@
         defaultOptions, newProject, allDirectives, serializeProject, deserializeProject,
         redundancyScan, sameCode, TRACE_TYPES,
         toBase64, fromBase64,
-        edit: { setName, markCode, markData, markPointers, undefine, setText, setConstant, subtract },
+        edit: { setName, markCode, markData, markPointers, undefine, setText, setConstant, subtract, addRelocation, removeRelocation },
         CLI_TYPES, EXT_TYPES, DATA_TYPES, POINTER_TYPES,
     };
 });

@@ -61,6 +61,40 @@ const cases = [
         bytes: Uint8Array.from([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
             0xA9, 0x00, 0x8D, 0x20, 0xD0, 0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0x60]),
     },
+    // project files; `relocate` applies the relocations xdis suggests
+    { name: 'galaxian', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true,
+      expect: ['org r:$A000', 'jmp lA000'] },
+    { name: 'galaxian-mads', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true,
+      options: { syntax: 'mads' }, mads: true, expect: ['org $A000,*'] },
+    {
+        // zero page code with a forward reference: xasm needs "z:" or it
+        // assembles lda l0085 as absolute
+        name: 'zp-forward', type: 'raw', org: 0x80, directives: ['code $80'], expect: ['lda z:l0085'],
+        bytes: Uint8Array.from([0xA5, 0x85, 0x4C, 0x80, 0x00, 0x07]),
+    },
+    {
+        // a block copied from $2010 to $0600 by an indexed loop, then jumped to
+        name: 'reloc-indexed', type: 'raw', org: 0x2000, directives: ['code $2000'], relocate: true,
+        expect: ['org r:$0600', 'jmp l0600', 'org $2030'],
+        bytes: Uint8Array.from([
+            0xA2, 0x1F,             // 2000 ldx #$1F
+            0xBD, 0x10, 0x20,       // 2002 lda $2010,x
+            0x9D, 0x00, 0x06,       // 2005 sta $0600,x
+            0xCA,                   // 2008 dex
+            0x10, 0xF7,             // 2009 bpl $2002
+            0x4C, 0x00, 0x06,       // 200B jmp $0600
+            0, 0,                   // 200E
+            0xA9, 0x01,             // 2010 lda #1     (runs at $0600)
+            0xD0, 0x02,             // 2012 bne +2
+            0x00, 0x00,             // 2014
+            0x20, 0x0C, 0x06,       // 2016 jsr $060C
+            0x4C, 0x00, 0x06,       // 2019 jmp $0600
+            0, 0, 0, 0,             // 201C
+            0x60,                   // 2020 rts (=$0610)... padding below
+            ...new Array(15).fill(0),
+            0xEA, 0x60,             // 2030 after the block
+        ]),
+    },
     { name: 'selftest-like', file: 'ransack/RANFIX.MEM', type: 'raw', org: 0x2000,
       directives: ['code start=$2000'] },
 ];
@@ -124,14 +158,23 @@ function instrAddrs(asm) {
 
 let failed = 0;
 for (const c of cases) {
-    const file = c.bytes ? path.join(OUT, c.name + '.bin') : path.join(HOME, c.file);
+    let file = c.bytes ? path.join(OUT, c.name + '.bin') : path.join(HOME, c.file || c.project);
     if (c.bytes) fs.writeFileSync(file, c.bytes);
     if (!fs.existsSync(file)) {
-        console.log(`SKIP ${c.name}: ${c.file} not found`);
+        console.log(`SKIP ${c.name}: ${c.file || c.project} not found`);
         continue;
     }
-    const bytes = new Uint8Array(fs.readFileSync(file));
-    const project = X.newProject();
+    let bytes = new Uint8Array(fs.readFileSync(file));
+    let project = X.newProject();
+    if (c.project) {
+        const res = X.deserializeProject(fs.readFileSync(file, 'utf8'));
+        project = res.project;
+        bytes = res.bytes;
+        file = path.join(OUT, c.name + '.bin');
+        fs.writeFileSync(file, bytes);
+        c.type = project.binary.type;
+        c.org = project.binary.org;
+    }
     for (const inc of c.include || []) {
         project.includes.push({ name: path.basename(inc), text: fs.readFileSync(path.join(__dirname, '..', inc), 'utf8') });
     }
@@ -145,6 +188,13 @@ for (const c of cases) {
     for (const d of c.directives || []) project.directives.push(X.parseDirectiveLine(d));
     Object.assign(project.options, c.options || {});
     if (c.edits) applyEdits(project, X.loadImage(bytes, type, org));
+    if (c.relocate) {
+        const img0 = X.loadImage(bytes, type, org);
+        const m0 = X.analyze(img0, X.allDirectives(project), project.options);
+        for (const w of m0.warnings) {
+            if (w.suggest) project.directives = X.edit.addRelocation(project.directives, img0, w.suggest);
+        }
+    }
 
     const t0 = Date.now();
     const img = X.loadImage(bytes, type, org);

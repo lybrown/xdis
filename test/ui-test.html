@@ -291,13 +291,71 @@ function check(name, ok, detail) {
     // 11. memory map and inspector render
     check('inspector shows label input', !!doc.getElementById('in-label'));
     check('problems badge', doc.getElementById('problem-count') !== null);
+    const finalAsm = asm();
+
+    // 12. relocation, using the example project when it is present
+    const PROJ = 'examples/Galaxian_PLUS_v2.xdis.json';
+    if ((await fetch('../' + PROJ, { method: 'HEAD' })).ok) {
+        frame.src = '../index.html?project=' + PROJ;
+        await new Promise((r) => frame.onload = r);
+        const w2 = frame.contentWindow, d2 = w2.document;
+        w2.addEventListener('unhandledrejection', (e) => log('info', 'unhandled: ' + (e.reason && e.reason.stack || e.reason)));
+        w2.addEventListener('error', (e) => log('info', 'error: ' + e.message));
+        for (let i = 0; i < 200 && !(w2.xdis && w2.xdis.listing); i++) await sleep(50);
+        const S2 = w2.xdis;
+        const ask2 = async (fn) => { for (let i = 0; i < 100 && !d2.getElementById('dlg').open; i++) await sleep(10); return fn(); };
+        d2.querySelector('[data-tab=problems]').click();
+        const sug = d2.querySelector('#problem-list .problem.suggest');
+        check('relocation suggested in Problems', !!sug, sug && sug.textContent);
+        sug.click();
+        await ask2(() => {
+            check('relocate dialog prefilled', d2.getElementById('rl-lo').value === '$5600' &&
+                d2.getElementById('rl-hi').value === '$75FF' && d2.getElementById('rl-run').value === '$A000');
+            d2.querySelector('#dlg button[value=ok]').click();
+        });
+        for (let i = 0; i < 300 && !S2.model.pieces.length; i++) await sleep(10);
+        if (!S2.model.pieces.length) log('info', `reloc dir=${S2.project.directives.some((d) => d.type === 'relocate')} status="${d2.getElementById('status-msg').textContent}" open=${d2.getElementById('dlg').open} rv="${d2.getElementById('dlg').returnValue}" title="${d2.getElementById('dlg-title').textContent}" err="${(d2.getElementById('dlg-err') || {}).textContent}"`);
+        check('relocated block created', S2.model.pieces.length === 1 && S2.model.pieces[0].start === 0xA000);
+        const L2 = S2.listing.lines;
+        check('org r: line in listing', L2.some((l) => l.k === 'dir' && /org r:\$A000/.test(l.p[0][1])));
+        check('cursor moved to $A000', L2[S2.cur].a === 0xA000);
+        check('directives moved to run addresses', S2.project.directives.some((d) => d.type === 'code' && d.addr === 0xA22E) &&
+            !S2.project.directives.some((d) => d.type === 'code' && d.addr === 0x582E));
+        check('jmp from loader names the run address', L2.some((l) => l.a === 0x5578 && l.p.some((p) => p[1] === 'lA000')));
+        await sleep(60);
+        check('inspector shows load address', /Loaded at/.test(d2.getElementById('tab-inspect').textContent) &&
+            /\$5600/.test(d2.getElementById('tab-inspect').textContent));
+        const waitFor = async (cond) => { for (let i = 0; i < 300 && !cond(); i++) await sleep(10); return cond(); };
+        const gotoText = async (text) => {
+            w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'g' }));
+            await ask2(() => {
+                const inp = d2.getElementById('dlg-input');
+                inp.value = text;
+                inp.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            });
+            await waitFor(() => !d2.getElementById('dlg').open);
+            return S2.listing.lines[S2.cur].a;
+        };
+        // $6344 is only loaded by segment 7, inside the relocated block
+        check('goto a load address lands on the run address', await gotoText('$6344') === 0xAD44);
+        check('goto seg:load address lands on the run address', await gotoText('7:$582E') === 0xA22E);
+        check('map stripe for relocated block', S2.mapBaseFor === S2.listing && S2.model.pieces.length === 1);
+        // remove it again via R
+        w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'r' }));
+        await ask2(() => d2.querySelector('#dlg button[value=remove]').click());
+        await waitFor(() => !S2.model.pieces.length);
+        check('relocation removed', !S2.model.pieces.length && !S2.project.directives.some((d) => d.type === 'relocate'));
+        check('directives moved back to load addresses', S2.project.directives.some((d) => d.type === 'code' && d.addr === 0x582E && d.seg === 7));
+    } else {
+        log('skip', 'relocation: ' + PROJ + ' not found');
+    }
 
     document.title = failures ? `FAIL ${failures}` : 'PASS';
     log(failures ? 'fail' : 'pass', `${failures} failure(s)`);
     // expose the final asm for inspection
     const pre = document.createElement('pre');
     pre.id = 'asm';
-    pre.textContent = asm().slice(0, 4000);
+    pre.textContent = finalAsm.slice(0, 4000);
     document.body.appendChild(pre);
 })().catch((e) => { failures++; log('fail', 'exception: ' + e.stack); document.title = 'FAIL'; });
 </script>

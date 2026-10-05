@@ -84,6 +84,10 @@
         updateAll();
         scheduleSave();
         startScan();
+        if (opt.keepView === false) {
+            const n = S.model.warnings.filter((w) => w.suggest).length;
+            if (n) setTimeout(() => setStatus(`${n} relocated code block${n > 1 ? 's' : ''} found — see Problems`), 0);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -167,6 +171,15 @@
         return 0;
     }
 
+    // "N:" segment prefix for display; relocated blocks only get one when
+    // their run address is also loaded by another segment.
+    function segPre(s, a) {
+        if (!S.img || !S.img.multi || !s) return '';
+        const T = S.model.S[s - 1];
+        if (T && T.seg.reloc && S.model.cover[a] <= 1) return '';
+        return s + ':';
+    }
+
     function curLine() {
         return S.listing && S.listing.lines[S.cur];
     }
@@ -210,10 +223,25 @@
     function lineForKey(k, prefer) {
         const L = S.listing, m = S.model;
         let s = X.keySeg(k);
-        const a = X.keyAddr(k);
+        let a = X.keyAddr(k);
         if (!s && m.finalOwner[a] && !L.firstLine.has(k)) {
             s = m.finalOwner[a];
             k = X.key(s, a);
+        }
+        if (!s && !m.finalOwner[a] && !L.firstLine.has(k) && m.loadToRun(a) !== null) {
+            // a load address inside a relocated block
+            k = m.loadToRun(a);
+            s = X.keySeg(k);
+            a = X.keyAddr(k);
+        }
+        // an address in a segment's relocated hole means the relocated block
+        for (const p of (s && m.holesOf.get(s)) || []) {
+            if (a >= p.load && a < p.load + p.data.length) {
+                s = p.index;
+                a = p.start + a - p.load;
+                k = X.key(s, a);
+                break;
+            }
         }
         const primary = () => {
             const T = m.S[s - 1];
@@ -273,6 +301,8 @@
         if (ln.a >= 0 && ln.k !== 'seg' && ln.k !== 'dir') {
             const multi = S.img.multi && ln.s && S.model.cover[ln.a] > 1;
             ad = (multi ? `<span class="sg">${ln.s}:</span>` : '') + X.h4(sub !== null ? sub : ln.a);
+            const T = ln.s && S.model.S[ln.s - 1];
+            if (T && T.seg.reloc) ad = `<span title="relocated: loaded at $${X.h4(T.seg.load + (sub !== null ? sub : ln.a) - T.seg.start)}">${ad}</span>`;
             by = ln.s ? bytesOf(ln, sub) : '';
         }
         let src = '';
@@ -368,7 +398,7 @@
         const [lo, hi] = selLines();
         const r = selRange();
         const sub = subAddr();
-        let s = ln.a >= 0 && ln.k !== 'dir' ? (S.img.multi && ln.s ? ln.s + ':' : '') + X.h4(sub !== null ? sub : ln.a) : '';
+        let s = ln.a >= 0 && ln.k !== 'dir' ? segPre(ln.s, sub !== null ? sub : ln.a) + X.h4(sub !== null ? sub : ln.a) : '';
         if (sub !== null) s += ` (byte ${sub - ln.a + 1} of ${ln.n})`;
         if (lo !== hi && r) s += ` · ${hexAddr(r.lo)}–${hexAddr(r.hi)} (${r.hi - r.lo + 1} bytes)`;
         el.textContent = s + `  line ${S.cur + 1}/${S.listing.lines.length}`;
@@ -480,6 +510,7 @@
         note: { label: 'Block comment…', key: ':' },
         operand: { label: 'Operand override…', key: 'O' },
         constant: { label: 'Name constant…', key: 'K' },
+        relocate: { label: 'Relocate (org r:)…', key: 'R' },
     };
 
     function collapse() {
@@ -529,7 +560,90 @@
             case 'note': return editText('note', curKey());
             case 'operand': return editOperand(ln);
             case 'constant': return editConstant(ln);
+            case 'relocate': return relocateDialog(r);
         }
+    }
+
+    // The relocated block (piece) the cursor is in, if any.
+    function curPiece() {
+        const ln = curLine();
+        const T = ln && ln.s && S.model.S[ln.s - 1];
+        return T && T.seg.reloc ? T.seg : null;
+    }
+
+    function relocKey(d) {
+        const p = S.model.pieces.find((x) => x.dir === d);
+        return p ? X.key(p.index, p.start) : (d.seg || 0) * 0x10000 + d.addr;
+    }
+
+    const parseHex = (v) => {
+        const n = parseInt(String(v).trim().replace(/^\$|^0x/i, ''), 16);
+        return isNaN(n) || n < 0 || n > 0xFFFF ? null : n;
+    };
+
+    // Relocate the selection (or offer to undo the relocation the cursor is in).
+    async function relocateDialog(r, preset) {
+        const piece = !preset && curPiece();
+        if (piece) {
+            const n = piece.data.length;
+            const b = await ask('Relocated block',
+                `<p>Bytes loaded at <b>$${X.h4(piece.load)}–$${X.h4(piece.load + n - 1)}</b> are disassembled as running at
+                 <b>$${X.h4(piece.start)}–$${X.h4(piece.end)}</b> (<code>org r:</code>).</p>
+                 <p>Removing the relocation moves directives inside it back to the load addresses.</p>`,
+                [{ label: 'Cancel', value: 'cancel' }, { label: 'Remove relocation', value: 'remove', primary: true }]);
+            if (b === 'remove') removeRelocation(piece.dir);
+            return;
+        }
+        if (!r && !preset) return noAddr();
+        const T = !preset && S.model.S[r.seg - 1];
+        const lo = preset ? preset.addr : r.lo;
+        const hi = preset ? preset.addr + preset.range : (r.lo === r.hi ? T.seg.end : r.hi);
+        const run = preset ? preset.run : null;
+        let res = null;
+        const body = `<p class="dim">Disassemble bytes that are loaded at one address but copied elsewhere before they run.
+            The output uses <code>org r:</code> (xasm) or <code>org RUN,*</code> (MADS).</p>
+            <div class="field"><label>Loaded from (hex)</label><input type="text" id="rl-lo" value="$${X.h4(lo)}"></div>
+            <div class="field"><label>Loaded to (hex, inclusive)</label><input type="text" id="rl-hi" value="$${X.h4(hi)}"></div>
+            <div class="field"><label>Runs at (hex)</label><input type="text" id="rl-run" value="${run !== null ? '$' + X.h4(run) : ''}" placeholder="e.g. $A000"></div>
+            <div id="dlg-err" class="problem" hidden></div>`;
+        const btn = await dialog(preset ? 'Relocate suggested block' : 'Relocate code', body,
+            [{ label: 'Cancel', value: 'cancel' }, { label: 'Relocate', value: 'ok', primary: true }], (dlg) => {
+                const focus = $(run === null ? 'rl-run' : 'rl-lo');
+                focus.focus();
+                focus.select();
+                const check = () => {
+                    const a = parseHex($('rl-lo').value), b = parseHex($('rl-hi').value), c = parseHex($('rl-run').value);
+                    let err = '';
+                    if (a === null || b === null || c === null) err = 'Enter hex addresses';
+                    else if (b < a) err = 'The end is before the start';
+                    else if (c + (b - a) > 0xFFFF) err = 'The run address range goes past $FFFF';
+                    $('dlg-err').hidden = !err;
+                    $('dlg-err').textContent = err;
+                    if (!err) res = { lo: a, hi: b, run: c };
+                    return !err;
+                };
+                dlg.querySelector('button[value=ok]').addEventListener('click', (e) => { if (!check()) e.preventDefault(); });
+                for (const id of ['rl-lo', 'rl-hi', 'rl-run']) {
+                    $(id).addEventListener('keydown', (e) => {
+                        if (e.key !== 'Enter') return;
+                        e.preventDefault();
+                        if (check()) closeDialog('ok');
+                    });
+                }
+            });
+        if (btn !== 'ok' || !res) return;
+        const seg = preset ? preset.seg : scopeSeg(r.seg, res.lo);
+        const d = { type: 'relocate', name: null, seg, addr: res.lo, range: res.hi - res.lo, run: res.run };
+        commit((p) => { p.directives = X.edit.addRelocation(p.directives, S.img, d); },
+            `Relocated $${X.h4(res.lo)}–$${X.h4(res.hi)} to run at $${X.h4(res.run)}`);
+        const bad = S.model.warnings.find((w) => w.dir === X.directiveString(d));
+        if (bad) return setStatus(bad.msg, true);
+        goKey(X.key(S.model.pieces.find((x) => x.dir.addr === d.addr && x.dir.run === d.run).index, d.run));
+    }
+
+    function removeRelocation(d) {
+        commit((p) => { p.directives = X.edit.removeRelocation(p.directives, S.model, d); },
+            `Removed ${X.directiveString(d)}`);
     }
 
     function noAddr() {
@@ -707,14 +821,37 @@
             `<button value="${esc(b.value)}" class="${b.primary ? 'primary' : ''}">${esc(b.label)}</button>`).join('');
         return new Promise((resolve) => {
             dlg.returnValue = '';
-            const done = () => {
-                dlg.removeEventListener('close', done);
-                resolve(dlg.returnValue);
+            // Settle directly from the buttons (and closeDialog) rather than
+            // waiting for the asynchronous "close" event, which is only used
+            // for Escape. A stale close event can't settle a newer dialog.
+            let settled = false;
+            const finish = (v) => {
+                if (settled) return;
+                settled = true;
+                dlg.removeEventListener('close', onClose);
+                if (dlgFinish === finish) dlgFinish = null;
+                if (dlg.open) dlg.close(v);
+                resolve(v);
             };
-            dlg.addEventListener('close', done);
+            const onClose = () => finish(dlg.returnValue);
+            dlgFinish = finish;
             dlg.showModal();
+            dlg.addEventListener('close', onClose);
             if (setup) setup(dlg);
+            for (const b of dlg.querySelectorAll('#dlg-buttons button')) {
+                b.addEventListener('click', (e) => {
+                    if (e.defaultPrevented) return;   // a validation handler said no
+                    e.preventDefault();
+                    finish(b.value);
+                });
+            }
         });
+    }
+
+    let dlgFinish = null;
+    function closeDialog(value) {
+        if (dlgFinish) dlgFinish(value);
+        else $('dlg').close(value);
     }
 
     async function promptText(title, value, o) {
@@ -741,7 +878,7 @@
             inp.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && (!o.multiline || e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
-                    if (check()) { result = inp.value; dlg.close('ok'); }
+                    if (check()) { result = inp.value; closeDialog('ok'); }
                 }
             });
             dlg.querySelector('button[value=ok]').addEventListener('click', (e) => {
@@ -766,6 +903,7 @@
             ['N', 'Name (label) the address — double-click a label too'],
             [';  /  :', 'Line comment / block comment'],
             ['O / K', 'Operand override / name an immediate constant'],
+            ['R', 'Relocate: bytes loaded here run at another address (org r:)'],
             ['Enter', 'Follow operand — or double/Ctrl-click a symbol'],
             ['Click', 'An address in an Access: or Callers: comment jumps to that instruction'],
             ['Esc / Alt+←', 'Go back · Alt+→ forward'],
@@ -799,7 +937,7 @@
         const k = curKey();
         if (k !== null) {
             const l = S.model.labelAt(k);
-            items.push(`<div class="hd">${esc((ln.s && S.img.multi ? ln.s + ':' : '') + X.h4(X.keyAddr(k)))}${l && !l.off ? ' ' + esc(l.name) : ''}</div>`);
+            items.push(`<div class="hd">${esc(segPre(ln.s, X.keyAddr(k)) + X.h4(X.keyAddr(k)))}${l && !l.off ? ' ' + esc(l.name) : ''}</div>`);
         }
         if (symKey !== undefined) {
             const tl = S.model.labelAt(symKey);
@@ -810,6 +948,7 @@
         }
         if (ln.s) {
             for (const a of ['code', 'data', 'text', 'word', 'address', 'codeptr', 'vector', 'undefine']) items.push(mi(a, ACTIONS[a].label, ACTIONS[a].key));
+            items.push(mi('relocate', curPiece() ? 'Remove relocation…' : ACTIONS.relocate.label, 'R'));
             items.push('<div class="sep"></div>');
         }
         if (k !== null) {
@@ -894,16 +1033,19 @@
             const ds = d.seg || 0;
             if (ds && ds !== seg) return false;
             if (!ds && seg && S.model.finalOwner[a] !== seg && S.model.finalOwner[a]) return false;
-            if (d.type === 'constant') return false;
+            if (d.type === 'constant' || d.type === 'relocate') return false;
             const end = d.addr + (d.type === 'vector' ? d.range | 1 : d.range);
             const inLo = a >= d.addr && a <= end;
             const inHi = d.hi !== undefined && a >= d.hi && a <= d.hi + d.range;
             return inLo || inHi;
         };
-        p.directives.forEach((d, i) => { if (match(d)) res.push({ d, i }); });
+        const T = S.model.S[seg - 1];
+        p.directives.forEach((d, i) => {
+            if (match(S.model.mapDirective(d)) || (T && T.seg.reloc && T.seg.dir === d)) res.push({ d, i });
+        });
         for (const inc of p.includes) {
             if (inc.enabled === false) continue;
-            for (const d of inc.parsed || []) if (match(d)) res.push({ d, inc: inc.name });
+            for (const d of inc.parsed || []) if (match(S.model.mapDirective(d))) res.push({ d, inc: inc.name });
         }
         return res;
     }
@@ -928,13 +1070,17 @@
         const userName = l && l.user && !l.off ? l.name : '';
         const comment = S.model.comments.get(k) || '';
         const note = S.model.notes.get(k) || '';
-        let h = `<div class="ins-head"><span class="big">${S.img.multi && ln.s ? ln.s + ':' : ''}${X.h4(a)}</span>
+        let h = `<div class="ins-head"><span class="big">${segPre(ln.s, a)}${X.h4(a)}</span>
             <span class="pill ${kc}">${kn}</span>${l && l.off ? `<span class="dim mono">${esc(l.name)}</span>` : ''}</div>`;
         if (T) {
             const off = a - T.seg.start;
             const n = sub !== null ? 1 : Math.max(lineBytes(ln), 1);
             h += `<div class="kv"><span>Bytes</span><span class="mono">${Array.from(T.seg.data.subarray(off, off + Math.min(n, 16)), X.h2).join(' ')}${n > 16 ? ' …' : ''}</span>
-                <span>Segment</span><span class="mono">${T.seg.index} ($${X.h4(T.seg.start)}–$${X.h4(T.seg.end)})</span></div>`;
+                <span>Segment</span><span class="mono">${T.seg.reloc
+                    ? `relocated block (from ${T.seg.parent})`
+                    : `${T.seg.index} ($${X.h4(T.seg.start)}–$${X.h4(T.seg.end)})`}</span>
+                ${T.seg.reloc ? `<span>Loaded at</span><span class="mono">$${X.h4(T.seg.load + a - T.seg.start)}
+                    <button class="small" data-act="relocate" title="Remove this relocation">Remove relocation</button></span>` : ''}</div>`;
         }
         h += `<div class="field"><label>Label <span class="dim">(Enter to apply)</span></label>
             <input type="text" id="in-label" value="${esc(userName)}" placeholder="${esc(l && !l.off ? l.name : 'none')}" spellcheck="false" autocomplete="off"></div>
@@ -1076,7 +1222,9 @@
             const st = S.dirState && S.dirState.get(d);
             if (onlyUnneeded && (!st || st === 'needed')) return;
             if (out.length < 3000) {
-                out.push(`<div class="item" data-goto="${(d.seg || 0) * 0x10000 + d.addr}" data-type="${d.type}"><span class="nm" title="${esc(s)} — double-click to edit">${esc(s)}</span>${dirTag(d)}<button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button></div>`);
+                const md = S.model ? S.model.mapDirective(d) : d;
+                const gk = d.type === 'relocate' && S.model ? relocKey(d) : (md.seg || 0) * 0x10000 + md.addr;
+                out.push(`<div class="item" data-goto="${gk}" data-type="${d.type}"><span class="nm" title="${esc(s)} — double-click to edit">${esc(s)}</span>${dirTag(d)}<button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button></div>`);
             }
         });
         el.innerHTML = out.join('') || (onlyUnneeded ? '<div class="more">None found — every tracing directive is needed.</div>'
@@ -1135,6 +1283,7 @@
 
     function deleteDirective(i) {
         const d = S.project.directives[i];
+        if (d.type === 'relocate') return removeRelocation(d);
         commit((p) => { p.directives = p.directives.filter((_, j) => j !== i); }, `Deleted ${X.directiveString(d)}`);
     }
 
@@ -1170,7 +1319,13 @@
         }
         if (S.img && S.img.segments.length > 1) {
             h += '<h3>Segments</h3><table class="seg-table"><tr><th>#</th><th>Start</th><th>End</th><th>Size</th><th></th></tr>' +
-                S.img.segments.map((s) => `<tr class="click" data-goto="${X.key(s.index, s.start)}"><td>${s.index}</td><td>${X.h4(s.start)}</td><td>${X.h4(s.end)}</td><td>${s.data.length}</td><td class="dim">${s.kind || (s.ini !== undefined ? 'ini' : '')}${s.run !== undefined && s.kind !== 'run' ? ' run' : ''}</td></tr>`).join('') + '</table>';
+                S.img.segments.map((s) => `<tr class="click" data-goto="${X.key(s.index, s.start)}"><td>${s.index}</td><td>${X.h4(s.start)}</td><td>${X.h4(s.end)}</td><td>${s.data.length}</td><td class="dim">${s.kind || (s.ini !== undefined ? 'ini' : '')}${s.run !== undefined && s.kind !== 'run' ? ' run' : ''}</td></tr>` +
+                    (S.model ? S.model.pieces.filter((p) => p.parent === s.index).map((p) =>
+                        `<tr class="click reloc" data-goto="${X.key(p.index, p.start)}" title="loaded at $${X.h4(p.load)}–$${X.h4(p.load + p.data.length - 1)}"><td>↳</td><td>${X.h4(p.start)}</td><td>${X.h4(p.end)}</td><td>${p.data.length}</td><td class="dim">org r: from ${X.h4(p.load)}</td></tr>`).join('') : '')).join('') + '</table>';
+        }
+        if (S.model && S.model.pieces.length && S.img.segments.length === 1) {
+            h += '<h3>Relocated blocks</h3><table class="seg-table">' + S.model.pieces.map((p) =>
+                `<tr class="click reloc" data-goto="${X.key(p.index, p.start)}"><td>${X.h4(p.start)}–${X.h4(p.end)}</td><td class="dim">loaded at ${X.h4(p.load)}</td></tr>`).join('') + '</table>';
         }
         const cb = (k, label, title) => `<label title="${esc(title || '')}"><input type="checkbox" data-opt="${k}" ${o[k] ? 'checked' : ''}> ${esc(label)}</label>`;
         h += `<h3>Output</h3><div class="opts">
@@ -1216,9 +1371,9 @@
         }
         S.problems = uniq;
         $('problem-list').innerHTML = uniq.slice(0, 500).map((p, i) => {
-            const where = p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
+            const where = p.suggest ? 'Review and apply this relocation' : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
                 p.extra ? 'Go to the corrupted data' : '';
-            return `<div class="problem${where ? ' link' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${esc(p.msg)}</div>`;
+            return `<div class="problem${where ? ' link' : ''}${p.suggest ? ' suggest' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${esc(p.msg)}</div>`;
         }).join('') || '<div class="more">No problems.</div>';
         const c = $('problem-count');
         c.hidden = !uniq.length;
@@ -1227,6 +1382,11 @@
 
     function gotoProblem(p) {
         if (!p) return;
+        if (p.suggest) {
+            goKey(p.k);
+            relocateDialog(null, p.suggest);
+            return;
+        }
         if (p.k !== undefined && S.model && lineForKey(p.k, 'label') >= 0) {
             goKey(p.k);
             $('listing').focus({ preventScroll: true });
@@ -1282,12 +1442,24 @@
             const o = ln.a - m.S[ln.s - 1].seg.start;
             for (let i = 0; i < ln.n; i++) c[o + i] = 1;
         }
+        // relocated blocks are shown where they are loaded
+        for (const p of m.pieces) {
+            cls[p.parent - 1].set(cls[p.index - 1], p.load - m.S[p.parent - 1].seg.start);
+        }
         S.mapCls = cls;
         return cls;
     }
 
+    // Where a (segment, address) is drawn on the map: relocated blocks map
+    // back to their load address in the parent segment.
+    function mapPos(s, a) {
+        const T = S.model.S[s - 1];
+        if (T && T.seg.reloc) return { s: T.seg.parent, a: T.seg.load + a - T.seg.start };
+        return { s, a };
+    }
+
     function mapLayout(w) {
-        const segs = S.model.S;
+        const segs = S.model.S.filter((T) => !T.seg.reloc);
         const total = segs.reduce((n, T) => n + T.seg.data.length, 0) || 1;
         const gap = segs.length > 1 ? 2 : 0;
         const minW = 2;
@@ -1299,6 +1471,7 @@
             out.push({ T, x0: x, x1: x + sw });
             x += sw + gap;
         }
+        out.byIndex = new Map(out.map((lay) => [lay.T.seg.index, lay]));
         return out;
     }
 
@@ -1332,6 +1505,15 @@
                 g.fillRect(x0 + i, 4, 1, h - 8);
             }
         }
+        // mark relocated blocks with a stripe along the top
+        g.fillStyle = css.getPropertyValue('--m-reloc').trim();
+        for (const p of S.model.pieces) {
+            const lay = S.mapLayout.byIndex.get(p.parent);
+            const len = lay.T.seg.data.length;
+            const xa = lay.x0 + (lay.x1 - lay.x0) * (p.load - lay.T.seg.start) / len;
+            const xb = lay.x0 + (lay.x1 - lay.x0) * (p.load + p.data.length - lay.T.seg.start) / len;
+            g.fillRect(xa, 0, Math.max(1, xb - xa), 3);
+        }
         // Keep the clean map so the viewport box can be redrawn on scroll.
         S.mapBase = g.getImageData(0, 0, c.width, c.height);
         S.mapBaseFor = S.listing;
@@ -1363,9 +1545,10 @@
         }
         if (!a) return;
         const xOf = (ln) => {
-            const lay = S.mapLayout[ln.s - 1];
+            const pos = mapPos(ln.s, ln.a);
+            const lay = S.mapLayout.byIndex.get(pos.s);
             const len = lay.T.seg.data.length;
-            return lay.x0 + (lay.x1 - lay.x0) * (ln.a - lay.T.seg.start) / len;
+            return lay.x0 + (lay.x1 - lay.x0) * (pos.a - lay.T.seg.start) / len;
         };
         const dpr = window.devicePixelRatio || 1;
         const x0 = xOf(a), x1 = Math.max(xOf(b), x0 + 2);
@@ -1387,7 +1570,12 @@
             if (x < lay.x0 - 1 && !clamp) return null;
             const len = lay.T.seg.data.length;
             const off = Math.max(0, Math.min(len - 1, Math.floor((x - lay.x0) / (lay.x1 - lay.x0) * len)));
-            return { s: lay.T.seg.index, a: lay.T.seg.start + off };
+            const a = lay.T.seg.start + off;
+            // inside a relocated block: the run address
+            for (const p of S.model.holesOf.get(lay.T.seg.index) || []) {
+                if (a >= p.load && a < p.load + p.data.length) return { s: p.index, a: p.start + a - p.load };
+            }
+            return { s: lay.T.seg.index, a };
         }
         return null;
     }
@@ -1687,7 +1875,7 @@
             if (!hit || !S.model) { tip.hidden = true; return; }
             const r = map.getBoundingClientRect();
             const l = S.model.labelAt(X.key(hit.s, hit.a));
-            tip.textContent = (S.img.multi ? hit.s + ':' : '') + X.h4(hit.a) + (l && !l.off ? ' ' + l.name : '');
+            tip.textContent = segPre(hit.s, hit.a) + X.h4(hit.a) + (l && !l.off ? ' ' + l.name : '');
             tip.hidden = false;
             tip.style.left = Math.max(0, Math.min(e.clientX + 12, innerWidth - 160)) + 'px';
             tip.style.top = r.bottom + 4 + 'px';
@@ -1892,7 +2080,7 @@
         if (e.key === 'Escape' || e.key === 'Backspace') { e.preventDefault(); return goBack(false); }
         const keys = {
             c: 'code', d: 'data', t: 'text', w: 'word', a: 'address', p: 'codeptr', v: 'vector',
-            u: 'undefine', n: 'name', l: 'name', ';': 'comment', ':': 'note', o: 'operand', k: 'constant',
+            u: 'undefine', n: 'name', l: 'name', ';': 'comment', ':': 'note', o: 'operand', k: 'constant', r: 'relocate',
         };
         const key = e.key.length === 1 ? e.key : '';
         if (key === 'g' || key === 'G') { e.preventDefault(); return gotoPrompt(); }
