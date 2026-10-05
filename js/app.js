@@ -85,8 +85,12 @@
         scheduleSave();
         startScan();
         if (opt.keepView === false) {
-            const n = S.model.warnings.filter((w) => w.suggest).length;
-            if (n) setTimeout(() => setStatus(`${n} relocated code block${n > 1 ? 's' : ''} found — see Problems`), 0);
+            const sug = S.model.warnings.filter((w) => w.suggest);
+            const nr = sug.filter((w) => w.suggest.type === 'relocate').length, np = sug.length - nr;
+            const parts = [];
+            if (nr) parts.push(`${nr} relocated code block${nr > 1 ? 's' : ''}`);
+            if (np) parts.push(`${np} likely pointer${np > 1 ? 's' : ''}`);
+            if (parts.length) setTimeout(() => setStatus(`Found ${parts.join(' and ')} — see Problems`), 0);
         }
     }
 
@@ -1369,22 +1373,70 @@
             seen.add(p.msg);
             uniq.push(p);
         }
+        // real problems first, then suggestions
+        uniq.sort((x, y) => !!x.suggest - !!y.suggest);
         S.problems = uniq;
-        $('problem-list').innerHTML = uniq.slice(0, 500).map((p, i) => {
-            const where = p.suggest ? 'Review and apply this relocation' : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
+        const ptrs = uniq.filter((p) => p.suggest && p.suggest.type !== 'relocate').length;
+        const allBtn = ptrs > 1 ? `<p><button id="btn-apply-ptrs" title="Show every suggested pair of immediates as an address">Apply all ${ptrs} pointer suggestions</button></p>` : '';
+        $('problem-list').innerHTML = allBtn + uniq.slice(0, 500).map((p, i) => {
+            const where = p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
                 p.extra ? 'Go to the corrupted data' : '';
             return `<div class="problem${where ? ' link' : ''}${p.suggest ? ' suggest' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${esc(p.msg)}</div>`;
         }).join('') || '<div class="more">No problems.</div>';
+        const nSug = uniq.filter((p) => p.suggest).length;
         const c = $('problem-count');
-        c.hidden = !uniq.length;
-        c.textContent = uniq.length;
+        c.hidden = uniq.length === nSug;
+        c.textContent = uniq.length - nSug;
+        $('suggest-count').hidden = !nSug;
+        $('suggest-count').textContent = nSug;
+    }
+
+    // Show a pair of immediates as the halves of an address.
+    async function pointerSuggestion(p) {
+        const d = p.suggest;
+        const T = S.model.segOf(X.key(d.seg || S.model.finalOwner[d.addr], d.addr));
+        const imm = (at) => {
+            const T2 = S.model.segOf(X.key(d.seg || S.model.finalOwner[at], at)) || T;
+            return T2 ? T2.seg.data[at - T2.seg.start] : 0;
+        };
+        const t = imm(d.addr) | (imm(d.hi) << 8);
+        const l = S.model.labelAt(X.key(S.model.finalOwner[t], t));
+        const name = l && !l.off ? l.name : 'l' + X.h4(t);
+        let type = d.type;
+        const body = `<p>${esc(p.msg.replace(/ — click.*/, ''))}.</p>
+            <pre class="mono">    lda #&gt;${esc(name)}	; $${X.h4(d.hi - 1)}
+    lda #&lt;${esc(name)}	; $${X.h4(d.addr - 1)}</pre>
+            <div class="opts">
+            <label><input type="radio" name="pt" value="codeptr" ${type === 'codeptr' ? 'checked' : ''}> Code pointer — also trace $${X.h4(t)} as code</label>
+            <label><input type="radio" name="pt" value="address" ${type === 'address' ? 'checked' : ''}> Data pointer</label></div>
+            <p class="dim">Adds <code id="ps-dir">${esc(X.directiveString(d))}</code></p>`;
+        const btn = await dialog('Show as an address', body,
+            [{ label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }], (dlg) => {
+                for (const r of dlg.querySelectorAll('input[name=pt]')) {
+                    r.addEventListener('change', () => {
+                        type = r.value;
+                        $('ps-dir').textContent = X.directiveString(Object.assign({}, d, { type }));
+                    });
+                }
+                dlg.querySelector('button[value=ok]').focus();
+            });
+        if (btn !== 'ok') return;
+        const nd = Object.assign({}, d, { type });
+        commit((pr) => { pr.directives = pr.directives.concat([nd]); }, `Added ${X.directiveString(nd)}`);
+    }
+
+    function applyAllPointerSuggestions() {
+        const list = (S.problems || []).filter((p) => p.suggest && p.suggest.type !== 'relocate').map((p) => p.suggest);
+        if (!list.length) return;
+        commit((pr) => { pr.directives = pr.directives.concat(list); }, `Added ${list.length} pointer directives`);
     }
 
     function gotoProblem(p) {
         if (!p) return;
         if (p.suggest) {
             goKey(p.k);
-            relocateDialog(null, p.suggest);
+            if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest);
+            else pointerSuggestion(p);
             return;
         }
         if (p.k !== undefined && S.model && lineForKey(p.k, 'label') >= 0) {
@@ -1915,6 +1967,7 @@
             if (e.target.classList.contains('dir-edit')) return;
             const prob = e.target.closest('[data-prob]');
             if (prob) return gotoProblem(S.problems[+prob.dataset.prob]);
+            if (e.target.id === 'btn-apply-ptrs') return applyAllPointerSuggestions();
             const ed = e.target.closest('[data-edit]');
             if (ed) return editDirective(ed.closest('.item'), +ed.dataset.edit);
             const del = e.target.closest('[data-del]');

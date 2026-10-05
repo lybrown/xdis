@@ -242,6 +242,7 @@ body.dragging .empty .drop, body.dragging #listing { outline: 3px dashed var(--a
 }
 .tabs button.on { color: var(--fg); border-bottom-color: var(--accent); }
 .badge { background: var(--warn); color: #fff; border-radius: 8px; padding: 0 5px; font-size: 11px; }
+.badge.suggest { background: var(--m-reloc); margin-left: 3px; }
 .panel { overflow: auto; padding: 10px 12px; min-height: 0; }
 .panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 14px 0 6px; }
 .panel h3:first-child { margin-top: 0; }

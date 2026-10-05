@@ -792,16 +792,22 @@
         // jumped to, and suggest a relocation for each:
         //   lda SRC,x / sta DST,x / dex / bpl|bne       (indexed, e.g. mva:rpl)
         //   lda (p),y / sta (q),y / iny / bne ... inc p+1 / inc q+1 / lda q+1 / cmp #END / bne
+        // Decoded traced instructions of a segment, in address order.
+        function instructionsOf(T) {
+            const ins = [];
+            const data = T.seg.data;
+            for (let o = 0; o < T.ilen.length; o++) {
+                if (!T.ilen[o]) continue;
+                const op = OPS[data[o]];
+                ins.push({ a: T.seg.start + o, op, lo: data[o + 1], hi: data[o + 2], w: data[o + 1] | (data[o + 2] << 8) });
+            }
+            return ins;
+        }
+
         function findRelocations() {
             const out = [];
             for (const T of S) {
-                const ins = [];
-                const data = T.seg.data;
-                for (let o = 0; o < T.ilen.length; o++) {
-                    if (!T.ilen[o]) continue;
-                    const op = OPS[data[o]];
-                    ins.push({ a: T.seg.start + o, op, lo: data[o + 1], hi: data[o + 2], w: data[o + 1] | (data[o + 2] << 8) });
-                }
+                const ins = instructionsOf(T);
                 for (let j = 0; j + 3 < ins.length; j++) {
                     const s1 = ins[j], s2 = ins[j + 1];
                     if (s1.op.mn !== 'lda' || s2.op.mn !== 'sta' || s1.op.mode !== s2.op.mode) continue;
@@ -874,6 +880,129 @@
                 if (x.lo === p + 1) return { load: src, run: dst, len: ((c.lo << 8) - src) & 0xFFFF };
             }
             return null;
+        }
+
+        for (const sg of findPointerPairs()) {
+            warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir });
+        }
+
+        // Find pairs of immediates that are the two halves of one address:
+        //   lda #hi / sta P+1 ... lda #lo / sta P        (any order, also ldx/ldy, stx/sty)
+        //   ldx #hi / ldy #lo / jsr ROUTINE              (e.g. SETVBV)
+        // and suggest showing them as #>label / #<label. A pair is only
+        // suggested with evidence that it is an address: P is used as a
+        // pointer, or the address lands on code or a label.
+        function findPointerPairs() {
+            const ptrUse = new Set();        // zero page / absolute pointers in use
+            const jumpVec = new Set();       // ... used by jmp (P) or declared as vectors
+            const dataPtr = new Set();       // ... used by (P),y / (P,x)
+            for (const d of directives) {
+                // word-sized locations: pointers, vectors and 2+ byte ranges
+                if ((POINTER_TYPES.includes(d.type) || d.range >= 1) && d.hi === undefined && d.type !== 'relocate') ptrUse.add(d.addr);
+                if (d.type === 'vector') jumpVec.add(d.addr);
+            }
+            const lists = S.map((T) => instructionsOf(T));
+            lists.forEach((ins) => {
+                for (const x of ins) {
+                    if (x.op.mode === 'izy' || x.op.mode === 'izx') { ptrUse.add(x.lo); dataPtr.add(x.lo); }
+                    if (x.op.mode === 'ind') { ptrUse.add(x.w); jumpVec.add(x.w); }
+                }
+            });
+            // only loaded memory counts as evidence; labels from symbol sets
+            // on unloaded addresses say nothing about these bytes
+            const isTarget = (t) => {
+                if (!finalOwner[t]) return null;
+                const k = key(finalOwner[t], t);
+                return isCodeStart(k) ? 'code' : labelAt(k) ? 'label' : null;
+            };
+            const isIO = (a) => a >= 0xD000 && a <= 0xDFFF;
+            const out = [];
+            const seen = new Set();
+            const WRITES = {
+                a: /^(lda|adc|sbc|and|ora|eor|pla|txa|tya|asl|lsr|rol|ror|lax|alr|anc|arr|ane|lxa|las)$/,
+                x: /^(ldx|inx|dex|tax|tsx|lax|sbx|lxa|las)$/,
+                y: /^(ldy|iny|dey|tay)$/,
+            };
+            S.forEach((T, ti) => {
+                const ins = lists[ti];
+                const segIdx = T.seg.index;
+                let regs = {};
+                let stores = new Map();         // P -> {v, at, i}
+                const reset = () => { regs = {}; stores = new Map(); };
+                ins.forEach((x, i) => {
+                    // a branch target starts a new block
+                    const r = refs.get(key(segIdx, x.a));
+                    if (r && r.callers.length) reset();
+                    const mn = x.op.mn;
+                    const reg = mn[2];
+                    if ((mn === 'lda' || mn === 'ldx' || mn === 'ldy') && x.op.mode === 'imm') {
+                        regs[reg] = { v: x.lo, at: x.a + 1, i };
+                    } else if ((mn === 'sta' || mn === 'stx' || mn === 'sty') && (x.op.mode === 'zp' || x.op.mode === 'abs')) {
+                        const P = x.op.mode === 'zp' ? x.lo : x.w;
+                        if (regs[reg]) {
+                            stores.set(P, Object.assign({ i }, regs[reg]));
+                            pair(T, stores.get(P - 1), stores.get(P), P - 1, 'store');
+                            pair(T, stores.get(P), stores.get(P + 1), P, 'store');
+                        } else {
+                            stores.delete(P);
+                        }
+                    } else if (mn === 'jsr') {
+                        // register pair passed to a routine: try Y/X and A/X, A/Y orders
+                        for (const [lo, hi] of [['y', 'x'], ['a', 'x'], ['a', 'y']]) {
+                            if (regs[lo] && regs[hi]) pair(T, regs[lo], regs[hi], -1, x.w);
+                        }
+                        reset();
+                        return;
+                    } else if (x.op.branch || mn === 'jmp' || mn === 'rts' || mn === 'rti' || mn === 'brk') {
+                        reset();
+                        return;
+                    }
+                    for (const g of ['a', 'x', 'y']) {
+                        if (WRITES[g].test(mn) && !((mn === 'ld' + g) && x.op.mode === 'imm')) delete regs[g];
+                    }
+                });
+            });
+            return out;
+
+            function pair(T, lo, hi, P, via) {
+                if (!lo || !hi || lo.at === hi.at || Math.abs(lo.i - hi.i) > 12) return;
+                const t = lo.v | (hi.v << 8);
+                if (t < 0x100) return;
+                const target = isTarget(t);
+                const viaJsr = typeof via === 'number';
+                if (viaJsr) {
+                    if (!target) return;                 // registers: need loaded code or a label
+                } else if (!ptrUse.has(P)) {
+                    if (!target || isIO(P)) return;      // adjacent hardware registers are not pointers
+                }
+                if (seen.has(lo.at) || seen.has(hi.at)) return;
+                // already shown as a pointer?
+                const Tl = segOf(key(T.seg.index, lo.at)), Th = segOf(key(T.seg.index, hi.at));
+                if (!Tl || !Th || Tl.ptr.has(lo.at - Tl.seg.start) || Th.ptr.has(hi.at - Th.seg.start)) return;
+                seen.add(lo.at);
+                seen.add(hi.at);
+                const scoped = (a) => (cover[a] > 1 ? T.seg.index : 0);
+                // code pointer for jump vectors, or code targets not reached as data
+                const code = viaJsr ? target === 'code'
+                    : jumpVec.has(P) || (target === 'code' && !dataPtr.has(P));
+                const dir = { type: code ? 'codeptr' : 'address', name: null, seg: scoped(lo.at), addr: lo.at, range: 0, hi: hi.at };
+                const tl = labelAt(key(finalOwner[t], t));
+                const tname = tl && !tl.off ? tl.name : 'l' + h4(t);
+                let where;
+                if (viaJsr) {
+                    const rl = labelAt(key(finalOwner[via], via));
+                    where = `passed to ${rl && !rl.off ? rl.name : '$' + h4(via)}`;
+                } else {
+                    const pl = labelAt(key(finalOwner[P], P));
+                    where = `stored into ${pl && !pl.off ? pl.name : '$' + h4(P)}`;
+                }
+                out.push({
+                    at: key(T.seg.index, Math.min(lo.at, hi.at) - 1),
+                    dir,
+                    msg: `#$${h2(hi.v)} at $${h4(hi.at - 1)} and #$${h2(lo.v)} at $${h4(lo.at - 1)} form $${h4(t)} (${where}) ` +
+                        `— click to show them as #>${tname} / #<${tname}`,
+                });
+            }
         }
 
         // Run address key for a load address inside a relocated block.

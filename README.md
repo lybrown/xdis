@@ -105,6 +105,21 @@ and page copies through zero page pointers such as `lda (p),y` / `sta (q),y`)
 whose destination is later called or jumped to. It lists each one in Problems
 as a suggestion; click it to review and apply the relocation.
 
+Pointers in immediates
+----------------------
+
+To show `lda #$BA` / `lda #$45` as `lda #>target` / `lda #<target`, use a split
+pointer directive naming the two operand bytes, high byte first:
+`codeptr $A393_A397` (also traces the target as code) or `address $A393_A397`.
+
+xdis suggests these itself (in Problems, with an *Apply all* button) when two
+immediates are stored into adjacent bytes `P` and `P+1`, or passed in a register
+pair to a subroutine, and there is evidence that they form an address. Either
+`P` is a known word location (a pointer used as `(P),y`, `jmp (P)`, a vector,
+or a 2-byte range in a symbol set), or the address lands on loaded code or a
+label. Stores to the I/O area are ignored. Jump vectors become `codeptr`, and
+pointers used for data become `address`.
+
 The *Problems* panel lists load, trace and label warnings. Click one to
 jump to the address it concerns, or to the directive that caused it.
 

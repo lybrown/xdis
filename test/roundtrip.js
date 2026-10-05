@@ -32,6 +32,18 @@ const DIS = process.env.DIS || path.join(HOME, 'dis', 'dis');
 const uiBin = path.join(HOME, 'ransack', 'ransack.xex');
 if (fs.existsSync(uiBin)) fs.copyFileSync(uiBin, path.join(OUT, 'ransack.xex'));
 
+// test/ui-test.html also uses the example project without its relocations
+const example = path.join(__dirname, '..', 'examples', 'Galaxian_PLUS_v2.xdis.json');
+if (fs.existsSync(example)) {
+    const { project, bytes } = X.deserializeProject(fs.readFileSync(example, 'utf8'));
+    const img = X.loadImage(bytes, project.binary.type, project.binary.org);
+    for (const d of project.directives.filter((x) => x.type === 'relocate')) {
+        const m = X.analyze(img, X.allDirectives(project), project.options);
+        project.directives = X.edit.removeRelocation(project.directives, m, d);
+    }
+    fs.writeFileSync(path.join(OUT, 'galaxian-norel.xdis.json'), X.serializeProject(project, bytes, true));
+}
+
 const cases = [
     {
         name: 'esmc', file: 'escm/Educational System Master Cartridge (Atari).bin',
@@ -66,6 +78,12 @@ const cases = [
       expect: ['org r:$A000', 'jmp lA000'] },
     { name: 'galaxian-mads', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true,
       options: { syntax: 'mads' }, mads: true, expect: ['org $A000,*'] },
+    { name: 'galaxian-pointers', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true, pointers: true,
+      expect: ['lda #>lBA45', 'lda #<lBA45', 'lda #>COLDSV'] },
+    { name: 'galaxian-pointers-mads', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true, pointers: true,
+      options: { syntax: 'mads' }, mads: true, expect: ['lda #>lBA45'] },
+    { name: 'bomber-pointers', file: 'bomber/bomber.xex', include: ['symbols/sys.dop', 'symbols/hardware.dop'], pointers: true,
+      expect: ['#>l7ED5', '#<l7ED5'] },
     {
         // zero page code with a forward reference: xasm needs "z:" or it
         // assembles lda l0085 as absolute
@@ -192,7 +210,17 @@ for (const c of cases) {
         const img0 = X.loadImage(bytes, type, org);
         const m0 = X.analyze(img0, X.allDirectives(project), project.options);
         for (const w of m0.warnings) {
-            if (w.suggest) project.directives = X.edit.addRelocation(project.directives, img0, w.suggest);
+            if (w.suggest && w.suggest.type === 'relocate') project.directives = X.edit.addRelocation(project.directives, img0, w.suggest);
+        }
+    }
+    if (c.pointers) {
+        // apply pointer suggestions until no new ones appear
+        const img0 = X.loadImage(bytes, type, org);
+        for (let round = 0; round < 5; round++) {
+            const m0 = X.analyze(img0, X.allDirectives(project), project.options);
+            const add = m0.warnings.filter((w) => w.suggest && w.suggest.type !== 'relocate').map((w) => w.suggest);
+            if (!add.length) break;
+            project.directives = project.directives.concat(add);
         }
     }
 
