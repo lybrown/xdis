@@ -48,9 +48,22 @@ labels at those addresses take priority.
 Supported types (atari800 numbering): standard 2/4/8/16 KB, Williams (8, 22,
 76), XEGS and switchable XEGS (12–14, 23–25, 33–38, 67), Atarimax (41, 42, 75),
 SIC! (54–56) and MegaCart (26–32, 64). Other types are shown as 8 KB banks at
-`$A000`. Bank switching isn't followed yet: within a bank and from fixed banks,
-references resolve, but a jump into a switched window resolves to the bank
-visible at power-on (or, from inside a bank, to that bank).
+`$A000`.
+
+Bank switching is followed along each code path. An access to a `CARTBANK`
+address (Williams, Atarimax), or a store of a known value to `CARTBANK` (XEGS,
+MegaCart, SIC!, e.g. after `lda #5`), selects that bank for the rest of the
+path, so jumps, calls and data accesses into the window resolve to it. That
+includes code that switches its own window. Before any select, the window holds
+the bank visible at power-on. When the bank can't be known (an indexed select
+such as `sta CARTBANK,x`), the jump is listed in Problems; click it to choose
+the bank. That adds a `bank b7:$A456 5` directive meaning the operand of the
+instruction at `$A456` is in bank 5. *Target bank…* in the context menu and
+inspector sets or changes it for any instruction into a bank window.
+
+Carts that copy themselves to RAM (most loaders) are best handled with
+`relocate`, one per copied block, e.g. `relocate b3:$A000+1FFF $2A00`. The
+*Add* box in the Directives panel accepts several directives pasted at once.
 * **Projects** (`.xdis.json`): directives, options, symbol sets and, optionally,
   the binary itself.
 * **dis option files** (`.dop`): *Import .dop…* merges directives and options.

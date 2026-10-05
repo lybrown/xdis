@@ -574,6 +574,7 @@
         operand: { label: 'Operand override…', key: 'O' },
         constant: { label: 'Name constant…', key: 'K' },
         relocate: { label: 'Relocate (org r:)…', key: 'R' },
+        targetbank: { label: 'Target bank…', key: '' },
         hibyte: { label: 'High byte of an address (#>)…', key: '>' },
         lobyte: { label: 'Low byte of an address (#<)…', key: '<' },
     };
@@ -626,6 +627,7 @@
             case 'operand': return editOperand(ln);
             case 'constant': return editConstant(ln);
             case 'relocate': return relocateDialog(r);
+            case 'targetbank': return inBankWindow(ln) ? chooseBank(ln.s, ln.a) : setStatus('The operand is not in a cartridge bank window', true);
             case 'hibyte': return editHalf(ln, 'hi');
             case 'lobyte': return editHalf(ln, 'lo');
         }
@@ -759,6 +761,37 @@
                 p.directives.push(d);
             }
         }, t === null ? `Removed ${type} at $${X.h4(a)}` : `$${X.h4(a)} is the ${type === 'hi' ? 'high' : 'low'} byte of $${X.h4(t)}`);
+    }
+
+    // The bank an instruction's operand refers to (a `bank` directive).
+    async function chooseBank(seg, addr) {
+        const n = S.img.segments.length;
+        const sc = scopeSeg(seg, addr);
+        const cur = S.project.directives.find((d) => d.type === 'bank' && d.addr === addr && (d.seg || 0) === sc);
+        const T = S.model.S[seg - 1];
+        const op = X.OPS[T.seg.data[addr - T.seg.start]];
+        const v = await promptText(`Bank for the operand of ${op.mn} at $${X.h4(addr)}`, cur ? String(cur.bank) : '', {
+            placeholder: `0–${n - 1}`,
+            help: 'Which cartridge bank is selected when this instruction runs. Leave empty to let xdis work it out.',
+            validate: (t) => (!t.trim() || (/^\d+$/.test(t.trim()) && +t < n) ? null : `A bank number from 0 to ${n - 1}`),
+        });
+        if (v === null) return;
+        const b = v.trim() === '' ? null : +v;
+        commit((p) => {
+            p.directives = p.directives.filter((d) => !(d.type === 'bank' && d.addr === addr && (d.seg || 0) === sc));
+            if (b !== null) p.directives.push({ type: 'bank', name: null, seg: sc, addr, range: 0, bank: b });
+        }, b === null ? `Removed the bank at $${X.h4(addr)}` : `The operand at $${X.h4(addr)} is in bank ${b}`);
+    }
+
+    // Is the operand of instruction line ln in a cartridge bank window?
+    function inBankWindow(ln) {
+        if (!S.img || !S.img.bankSwitch || !ln || ln.k !== 'ins') return false;
+        const T = S.model.S[ln.s - 1];
+        const op = X.OPS[T.seg.data[ln.a - T.seg.start]];
+        if (op.len < 3 && op.mode !== 'rel') return false;
+        const o = ln.a - T.seg.start;
+        const t = op.mode === 'rel' ? (ln.a + 2 + ((T.seg.data[o + 1] ^ 0x80) - 0x80)) & 0xFFFF : T.seg.data[o + 1] | (T.seg.data[o + 2] << 8);
+        return S.img.bankSwitch.windows.some(([a, b]) => t >= a && t <= b);
     }
 
     function removeRelocation(d) {
@@ -1089,6 +1122,7 @@
             items.push(mi('operand', ACTIONS.operand.label, 'O'));
             items.push(mi('constant', ACTIONS.constant.label, 'K'));
         }
+        if (inBankWindow(ln)) items.push(mi('targetbank', ACTIONS.targetbank.label, ''));
         if (halfByte(ln) !== null) {
             items.push(mi('hibyte', ACTIONS.hibyte.label, '>'));
             items.push(mi('lobyte', ACTIONS.lobyte.label, '<'));
@@ -1247,6 +1281,11 @@
         h += `<h3>Accessed by (${new Set(r.access.map(String)).size})</h3><div class="xref">${refLinks(r.access) || '<span class="dim">none</span>'}</div>`;
         const target = ln.p.find((p) => p[2] !== undefined && (p[0] === 'sym' || p[0] === 'num') &&
             (sub === null || p[3] === undefined || p[3] === sub));
+        if (target && inBankWindow(ln) && sub === null) {
+            const tb = S.model.S[X.keySeg(target[2]) - 1];
+            h += `<h3>Target bank</h3><div class="xref">${tb && tb.seg.bank !== undefined ? 'bank ' + tb.seg.bank : 'none'}
+                <button class="small" data-act="targetbank" title="Set which bank this operand refers to">Change…</button></div>`;
+        }
         if (target) {
             const tl = S.model.labelAt(target[2]);
             h += `<h3>Operand target</h3><div class="xref"><a data-k="${target[2]}">${esc(tl ? tl.name : hexAddr(X.keyAddr(target[2])))}</a>
@@ -1544,7 +1583,7 @@
         const ptrs = uniq.filter((p) => p.suggest && p.suggest.type !== 'relocate').length;
         const allBtn = ptrs > 1 ? `<p><button id="btn-apply-ptrs" title="Show every suggested pair of immediates as an address">Apply all ${ptrs} pointer suggestions</button></p>` : '';
         $('problem-list').innerHTML = allBtn + uniq.slice(0, 500).map((p, i) => {
-            const where = p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
+            const where = p.bankFix ? 'Choose the bank' : p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
                 p.extra ? 'Go to the corrupted data' : '';
             return `<div class="problem${where ? ' link' : ''}${p.suggest ? ' suggest' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${esc(p.msg)}</div>`;
         }).join('') || '<div class="more">No problems.</div>';
@@ -1616,6 +1655,11 @@
 
     function gotoProblem(p) {
         if (!p) return;
+        if (p.bankFix) {
+            goKey(p.k);
+            chooseBank(p.bankFix.seg, p.bankFix.addr);
+            return;
+        }
         if (p.suggest) {
             goKey(p.k);
             if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest);
@@ -2231,20 +2275,33 @@
         $('label-filter').addEventListener('input', updateLabels);
         $('dir-filter').addEventListener('input', updateDirectives);
         $('dir-unneeded').addEventListener('change', updateDirectives);
+        // One or more directives in dis option syntax, one per line, added as
+        // a single undoable change. Relocations move directives as usual.
+        const addDirectivesText = (v) => {
+            const r = X.parseDop(v, 'input');
+            if (r.errors.length || (!r.directives.length && !Object.keys(r.options).length && !r.args.length)) {
+                setStatus(r.errors[0] || 'Unrecognized directive', true);
+                return false;
+            }
+            commit((p) => {
+                for (const d of r.directives) {
+                    p.directives = d.type === 'relocate' ? X.edit.addRelocation(p.directives, S.img, d) : p.directives.concat([d]);
+                }
+                Object.assign(p.options, r.options);
+                for (const a of r.args) if (SYM.files[a] && !p.includes.some((i) => i.name === a)) p.includes.push({ name: a, text: SYM.files[a], enabled: true });
+            }, r.directives.length > 1 ? `Added ${r.directives.length} directives` : `Added ${v.trim()}`);
+            return true;
+        };
         $('dir-add').addEventListener('keydown', (e) => {
             if (e.key !== 'Enter') return;
             const v = e.target.value.trim();
-            if (!v) return;
-            const r = X.parseDop(v, 'input');
-            if (r.errors.length || (!r.directives.length && !Object.keys(r.options).length && !r.args.length)) {
-                return setStatus(r.errors[0] || 'Unrecognized directive', true);
-            }
-            e.target.value = '';
-            commit((p) => {
-                p.directives = p.directives.concat(r.directives);
-                Object.assign(p.options, r.options);
-                for (const a of r.args) if (SYM.files[a] && !p.includes.some((i) => i.name === a)) p.includes.push({ name: a, text: SYM.files[a], enabled: true });
-            }, `Added ${v}`);
+            if (v && addDirectivesText(v)) e.target.value = '';
+        });
+        $('dir-add').addEventListener('paste', (e) => {
+            const text = (e.clipboardData || window.clipboardData).getData('text');
+            if (!/\n/.test(text.trim())) return;          // a single line pastes normally
+            e.preventDefault();
+            addDirectivesText(text);
         });
 
         // tabs

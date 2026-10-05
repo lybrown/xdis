@@ -215,15 +215,37 @@
     // regs(n) lists the bank registers as [name, address, last offset] for n
     // banks: CARTBANK selects (by the address accessed, or the value written),
     // CARTOFF disables the cartridge.
-    const blocks = (size, at, boot, regs) => ({ size, at, boot, regs: regs || (() => []) });
+    // switch(n) describes bank switching for n blocks: {windows: [[start,
+    // end], ...], byAddress(a) / byValue(v) -> [[window, segment], ...]}
+    // where segment is a block's segment number (block + 1) or -1 for "off".
+    const blocks = (size, at, boot, regs, sw) => ({ size, at, boot, regs: regs || (() => []), sw: sw || null });
+    const swAddress = (win, offBase, offLen) => (n) => ({
+        windows: [win],
+        byAddress: (a) => (a >= 0xD500 && a < 0xD500 + n ? [[0, a - 0xD500 + 1]]
+            : a >= offBase && a <= offBase + offLen ? [[0, -1]] : null),
+    });
+    // value written to $D5xx: low bits pick the block for one window
+    const swValue = (win, off) => (n) => ({
+        windows: [win],
+        byValue: (v) => [[0, off && v & 0x80 ? -1 : (v & (n - 1)) % n + 1]],
+    });
     const byValue = () => [['CARTBANK', 0xD500, 0xFF]];
     const byAddress = (off, offLen) => (n) => [['CARTBANK', 0xD500, n - 1], ['CARTOFF', off, offLen]];
-    const xegs = blocks(0x2000, (i, n) => (i === n - 1 ? 0xA000 : 0x8000), (n) => [0, n - 1], byValue);
-    const williams = blocks(0x2000, () => 0xA000, () => [0], byAddress(0xD508, 7));
-    const atarimax128 = blocks(0x2000, () => 0xA000, () => [0], byAddress(0xD510, 0xF));
-    const atarimax1m = (boot) => blocks(0x2000, () => 0xA000, boot, byAddress(0xD580, 0x7F));
-    const megacart = blocks(0x4000, () => 0x8000, () => [0], byValue);
-    const sic = blocks(0x2000, (i) => (i & 1 ? 0xA000 : 0x8000), () => [1], byValue);
+    const xegs = blocks(0x2000, (i, n) => (i === n - 1 ? 0xA000 : 0x8000), (n) => [0, n - 1], byValue,
+        swValue([0x8000, 0x9FFF], true));
+    const williams = blocks(0x2000, () => 0xA000, () => [0], byAddress(0xD508, 7), swAddress([0xA000, 0xBFFF], 0xD508, 7));
+    const atarimax128 = blocks(0x2000, () => 0xA000, () => [0], byAddress(0xD510, 0xF), swAddress([0xA000, 0xBFFF], 0xD510, 0xF));
+    const atarimax1m = (boot) => blocks(0x2000, () => 0xA000, boot, byAddress(0xD580, 0x7F), swAddress([0xA000, 0xBFFF], 0xD580, 0x7F));
+    const megacart = blocks(0x4000, () => 0x8000, () => [0], byValue, swValue([0x8000, 0xBFFF], true));
+    // SIC!: bits 0-2 pick a 16 KB bank (blocks 2b at $8000, 2b+1 at $A000),
+    // bit 5 enables the $8000 half, bit 6 disables the $A000 half
+    const sic = blocks(0x2000, (i) => (i & 1 ? 0xA000 : 0x8000), () => [1], byValue, (n) => ({
+        windows: [[0x8000, 0x9FFF], [0xA000, 0xBFFF]],
+        byValue: (v) => {
+            const b = (v & 7) % Math.max(1, n >> 1);
+            return [[0, v & 0x20 ? 2 * b + 1 : -1], [1, v & 0x40 ? -1 : 2 * b + 2]];
+        },
+    }));
     const CART_TYPES = {
         1: ['Standard 8 KB', blocks(0x2000, () => 0xA000, () => [0])],
         2: ['Standard 16 KB', blocks(0x4000, () => 0x8000, () => [0])],
@@ -272,7 +294,7 @@
             desc = ['Unknown', blocks(0x2000, () => 0xA000, () => [0])];
         }
         img.cartName = desc[0];
-        const { size, at, boot, regs } = desc[1];
+        const { size, at, boot, regs, sw } = desc[1];
         const n = Math.ceil(data.length / size);
         for (let i = 0; i < n; i++) {
             const seg = addSegment(img, at(i, n), data.subarray(i * size, (i + 1) * size));
@@ -283,6 +305,7 @@
         img.boot = new Set(boot(n).filter((i) => i < n).map((i) => i + 1));
         // built-in labels for the bank registers; offsets in decimal so
         // CARTBANK+12 reads as bank 12
+        if (sw) img.bankSwitch = sw(n);
         img.cartDirectives = regs(n).map(([name, addr, range]) =>
             ({ type: 'data', name, seg: 0, addr, range, dec: true, from: 'cartridge' }));
         // the header of the cartridge visible at power-on
@@ -326,11 +349,11 @@
     // carried through .dop files as ";xdis ..." comment lines.
 
     const CLI_TYPES = ['code', 'data', 'vector', 'constant', 'address', 'codeptr'];
-    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo'];
+    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank'];
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
-    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1 };
+    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1, bank: 1 };
 
     const ALIASES = {
         c: 'code', d: 'data', C: 'constant', v: 'vector', A: 'address',
@@ -379,6 +402,7 @@
 
     function directiveString(d) {
         if (d.type === 'relocate') return `relocate ${specString(d)} $${hx(d.run)}`;
+        if (d.type === 'bank') return `bank ${specString(d)} ${d.bank}`;
         if (d.type === 'hi' || d.type === 'lo') return `${d.type} ${specString(d)}${d.target !== undefined ? ' $' + hx(d.target) : ''}`;
         if (d.type === 'comment' || d.type === 'note' || d.type === 'operand') {
             const loc = (d.seg ? segText(d.seg) + ':' : '') + '$' + hx(d.addr);
@@ -405,6 +429,15 @@
             if (d.hi !== undefined) throw new Error('relocate takes a single address range');
             d.run = parseInt(r[2], 16);
             if (d.run + d.range > 0xFFFF) throw new Error(`relocate: $${hx(d.run)}+${hx(d.range)} runs past $FFFF`);
+            return d;
+        }
+        if (type === 'bank') {
+            // bank [seg:]$ADDR N: the operand of the instruction at ADDR
+            // refers to cartridge bank N
+            const r = /^(\S+)\s+(\d+)$/.exec(m[2]);
+            if (!r) throw new Error(`Bad bank: ${m[2]} (expected e.g. bank b7:$A456 5)`);
+            const d = parseSpec(type, r[1]);
+            d.bank = parseInt(r[2], 10);
             return d;
         }
         if (type === 'hi' || type === 'lo') {
@@ -730,7 +763,7 @@
         // --- tracing
         const mem = new Uint8Array(MEM);
         const owner = new Int16Array(MEM);
-        const visited = new Uint8Array(MEM);
+        const visited = new Set();       // (segment, address) keys traced in this pass
         const refs = new Map();
         const need = new Set();
         let traced = false;
@@ -741,31 +774,84 @@
             r[kind].push(from);
         }
 
+        // --- cartridge bank switching: the selected banks travel with each
+        // code path. A path's state is {w: per-window selection, a, x, y}
+        // with known immediates in the registers. A window selection is a
+        // segment, -1 (switched off) or UNKNOWN; undefined means whatever the
+        // analysis order put there (the power-on banks in the final pass).
+        const SW = img.bankSwitch || null;
+        const UNKNOWN = -2;
+        const winOf = (a) => {
+            if (SW) for (let w = 0; w < SW.windows.length; w++) if (a >= SW.windows[w][0] && a <= SW.windows[w][1]) return w;
+            return -1;
+        };
+        function segAt(st, a) {
+            if (st) {
+                const w = winOf(a);
+                if (w >= 0 && st.w[w] !== undefined) return st.w[w] === -1 ? 0 : st.w[w];
+            }
+            return owner[a];
+        }
+        const byteAt = (sg, a) => (sg === owner[a] ? mem[a] : S[sg - 1].seg.data[a - S[sg - 1].seg.start]);
+        const WRITES = {
+            a: /^(lda|adc|sbc|and|ora|eor|pla|txa|tya|asl|lsr|rol|ror|lax|alr|anc|arr|ane|lxa|las)$/,
+            x: /^(ldx|inx|dex|tax|tsx|lax|sbx|lxa|las)$/,
+            y: /^(ldy|iny|dey|tay)$/,
+        };
+        // bank directives: the operand of an instruction refers to bank N
+        const bankOv = new Map();
+        for (const d of directives) {
+            if (d.type !== 'bank') continue;
+            if (!img.banked || d.bank >= real.length) {
+                warn(`${directiveString(d)}: no such bank`, undefined, d);
+                continue;
+            }
+            bankOv.set(key(resolveSeg(d, d.addr), d.addr), d.bank + 1);
+        }
+        // a bank select by instruction op at address t ($D5xx)
+        function select(st, op, t) {
+            const set = (list) => { for (const [w, sg] of list) st.w[w] = sg; };
+            const all = () => SW.windows.forEach((_, w) => { st.w[w] = UNKNOWN; });
+            if (SW.byAddress) {
+                if (op.mode === 'abs') set(SW.byAddress(t) || []);
+                else all();                                    // indexed: which address?
+            } else if (SW.byValue && /^st[axy]$/.test(op.mn)) {
+                const v = st[op.mn[2]];
+                if (v !== null && v !== undefined) set(SW.byValue(v));
+                else all();
+            }
+        }
+
         function trace(entry, from) {
             traced = true;
             entry &= 0xFFFF;
-            const ek = key(owner[entry], entry);
+            const st0 = SW ? { w: [], a: null, x: null, y: null } : null;
+            const es = owner[entry];
+            const ek = key(es, entry);
             need.add(ek);
             addRef(ek, 'callers', from);
-            const work = [entry];
+            const work = [[entry, st0]];
             while (work.length) {
-                let i = work.pop();
+                let [i, cs] = work.pop();
+                if (cs) cs = { w: cs.w.slice(), a: cs.a, x: cs.x, y: cs.y };
                 for (;;) {
-                    const s = owner[i];
-                    if (!s) break;
-                    const op = OPS[mem[i]];
+                    const s = segAt(cs, i);
+                    if (s <= 0) break;                         // unloaded, switched off or unknown bank
+                    const op = OPS[byteAt(s, i)];
                     if (op.code === 0 || op.jam || (op.illegal && !opts.illegal)) break;
-                    if (visited[i]) break;
+                    const vk = key(s, i);
+                    if (visited.has(vk)) break;
                     const T = S[s - 1];
                     const off = i - T.seg.start;
                     if (T.fmt[off]) break;
-                    visited[i] = 1;
-                    if (i + op.len > MEM || (op.len > 1 && !owner[i + 1]) || (op.len > 2 && !owner[i + 2])) {
+                    visited.add(vk);
+                    const s1 = op.len > 1 ? segAt(cs, i + 1) : s, s2 = op.len > 2 ? segAt(cs, i + 2) : s;
+                    if (i + op.len > MEM || s1 <= 0 || s2 <= 0) {
                         warn(`Instruction goes past end of memory at $${h4(i)}`, key(s, i));
                         break;
                     }
                     T.ilen[off] = op.len;
-                    const lo = mem[i + 1], hi = mem[i + 2];
+                    const lo = op.len > 1 ? byteAt(s1, i + 1) : 0, hi = op.len > 2 ? byteAt(s2, i + 2) : 0;
                     const fromKey = key(s, i);
                     let t = -1;
                     switch (op.mode) {
@@ -773,11 +859,41 @@
                         case 'zp': case 'zpx': case 'zpy': case 'izx': case 'izy': t = lo; break;
                         case 'abs': case 'abx': case 'aby': case 'ind': t = lo | (hi << 8); break;
                     }
+                    let ts = 0, unknownBank = false;
                     if (t >= 0) {
-                        T.tseg[off] = owner[t];
-                        need.add(key(owner[t], t));
+                        ts = bankOv.has(fromKey) ? bankOv.get(fromKey) : segAt(cs, t);
+                        if (ts === UNKNOWN) unknownBank = true;
+                        if (ts < 0) ts = owner[t];
+                        T.tseg[off] = ts;
+                        need.add(key(ts, t));
                     }
-                    const tk = key(owner[t], t);
+                    const tk = key(ts, t);
+                    // the state a jump target is traced with: a bank directive
+                    // selects that bank in the target's window
+                    const into = () => {
+                        if (!cs || !bankOv.has(fromKey) || winOf(t) < 0) return cs;
+                        const ns = { w: cs.w.slice(), a: cs.a, x: cs.x, y: cs.y };
+                        ns.w[winOf(t)] = ts;
+                        return ns;
+                    };
+                    // registers and bank selects on this path
+                    if (cs) {
+                        if (t >= 0xD500 && t <= 0xD5FF && op.mode !== 'imm' && op.mode !== 'rel') select(cs, op, t);
+                        if ((op.mn === 'lda' || op.mn === 'ldx' || op.mn === 'ldy') && op.mode === 'imm') cs[op.mn[2]] = lo;
+                        else for (const g of ['a', 'x', 'y']) if (WRITES[g].test(op.mn)) cs[g] = null;
+                    }
+                    const jump = op.mn === 'jmp' || op.mn === 'jsr' || op.branch;
+                    if (jump && unknownBank && op.mode !== 'ind') {
+                        const w = SW.windows[winOf(t)];
+                        warnings.push({
+                            msg: `${op.mn} $${h4(t)} at $${h4(i)} goes into the bank window $${h4(w[0])}-$${h4(w[1])}, ` +
+                                'but which bank is selected there is unknown — click to choose it',
+                            k: fromKey, bankFix: { seg: s, addr: i, target: t },
+                        });
+                        if (op.mn === 'jmp') break;
+                        i += op.len;
+                        continue;
+                    }
                     if (op.mn === 'rts' || op.mn === 'rti') break;
                     if (op.mn === 'jmp') {
                         if (op.mode === 'ind') {
@@ -787,19 +903,20 @@
                                 const dest = mem[t] | (mem[t2] << 8);
                                 need.add(key(owner[dest], dest));
                                 addRef(key(owner[dest], dest), 'callers', fromKey);
-                                work.push(dest);
+                                work.push([dest, cs]);
                             } else {
                                 warn(`Indirect JMP references undefined memory at $${h4(i)}`, key(s, i));
                             }
                         } else {
                             addRef(tk, 'callers', fromKey);
-                            work.push(t);
+                            work.push([t, into()]);
                         }
                         break;
                     }
                     if (op.mn === 'jsr' || op.branch) {
                         addRef(tk, 'callers', fromKey);
-                        work.push(t);
+                        work.push([t, into()]);
+                        if (cs && op.mn === 'jsr') cs = { w: cs.w.slice(), a: null, x: null, y: null };
                     } else if (t >= 0) {
                         addRef(tk, 'access', fromKey);
                     }
@@ -870,7 +987,7 @@
 
         let run = null;
         for (const s of loadOrder) {
-            visited.fill(0);
+            visited.clear();
             mem.set(s.data, s.start);
             owner.fill(s.index, s.start, s.end + 1);
             const pieces = R.holesOf.get(s.index) || [];
@@ -887,7 +1004,7 @@
                 trace(s.ini, pseudo(`ini_segment${s.index}`, { keys: [key(owner[0x2E2], 0x2E2)] }));
             }
         }
-        visited.fill(0);
+        visited.clear();
         if (run) {
             pointer(0x2E0, 0x2E1, { type: 'run', addr: 0x2E0, range: 0 });
             trace(run.run, pseudo(`run_segment${run.index}`, { keys: [key(owner[0x2E0], 0x2E0)] }));

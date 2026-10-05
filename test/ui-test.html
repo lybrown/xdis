@@ -493,6 +493,44 @@ function check(name, ok, detail) {
         log('skip', 'cartridge: run roundtrip.js first');
     }
 
+    // 12c. bank switching: an unknown bank is a problem you can resolve
+    if ((await fetch('out/cart-xegs-switch.bin', { method: 'HEAD' })).ok) {
+        frame.src = '../index.html?bin=test/out/cart-xegs-switch.bin&type=cart&cart=12';
+        await new Promise((r) => frame.onload = r);
+        const w5 = frame.contentWindow, d5 = w5.document;
+        for (let i = 0; i < 100 && !(w5.xdis && w5.xdis.listing); i++) await sleep(50);
+        const S5 = w5.xdis;
+        const waitFor5 = async (cond) => { for (let i = 0; i < 300 && !cond(); i++) await sleep(10); return cond(); };
+        const call = (a) => S5.listing.lines.find((l) => l.k === 'ins' && l.a === a).p.map((p) => p[1]).join('');
+        check('known bank select resolves the call', /jsr b2_l8000/.test(call(0xA005)), call(0xA005));
+        d5.querySelector('[data-tab=problems]').click();
+        await sleep(30);
+        const bp = Array.from(d5.querySelectorAll('#problem-list .problem')).find((x) => /bank is selected there is unknown/.test(x.textContent));
+        check('unknown bank listed in Problems', !!bp && bp.classList.contains('link'));
+        if (bp) {
+            bp.click();
+            await waitFor5(() => d5.getElementById('dlg').open);
+            const bi = d5.getElementById('dlg-input');
+            bi.value = '1';
+            bi.dispatchEvent(new w5.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            await waitFor5(() => /b1_l8000/.test(call(0xA00B)));
+            check('choosing bank 1 resolves the call', /jsr b1_l8000/.test(call(0xA00B)), call(0xA00B));
+            check('bank directive added', S5.project.directives.some((d) => d.type === 'bank' && d.bank === 1 && d.addr === 0xA00B));
+            check('bank 1 code traced', S5.listing.lines.some((l) => l.s === 2 && l.a === 0x8000 && l.k === 'ins'));
+        }
+        // several directives pasted at once are one change
+        d5.querySelector('[data-tab=directives]').click();
+        const undoBefore = S5.undo.length;
+        const dt = new w5.DataTransfer();
+        dt.setData('text/plain', 'label one=$A000\nlabel two=$A005\n');
+        d5.getElementById('dir-add').dispatchEvent(new w5.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+        await sleep(30);
+        check('pasting two directives adds both', ['one', 'two'].every((n) => S5.project.directives.some((d) => d.name === n)));
+        check('as one undo step', S5.undo.length === undoBefore + 1);
+    } else {
+        log('skip', 'bank switching: run roundtrip.js first');
+    }
+
     // 13. self-modifying jmp in the bomb jack example: a low byte written
     // into the jmp operand
     const BJ = 'examples/bomb-jack-v1.5.xdis.json';

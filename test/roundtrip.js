@@ -46,11 +46,12 @@ if (fs.existsSync(example)) {
 
 const ATARI_SETS = ['atarixl', 'hardware', 'sys', 'atarifp', 'basic', 'dos'].map((n) => `symbols/${n}.dop`);
 
-// n 8 KB banks at $A000; bank 0 holds `code` at $A000 and a header
-// pointing there
+// n 8 KB banks at $A000, each with `code` at $A000 (so switching banks
+// from that code continues in the new bank); bank 0 has a header pointing
+// there
 function cartImage(n, code) {
     const b = new Uint8Array(n * 0x2000);
-    b.set(code, 0);
+    for (let i = 0; i < n; i++) b.set(code, i * 0x2000);
     b.set([0x00, 0xA0, 0x00, 0x04, 0x00, 0xA0], 0x1FFA);
     return b;
 }
@@ -140,6 +141,24 @@ const cases = [
       bytes: cartImage(8, [0xAD, 0x03, 0xD5, 0x8D, 0x08, 0xD5, 0x60]) },      // lda $D503 / sta $D508 / rts
     { name: 'cart-regs-override', type: 'cart', cartType: 8, directives: ['data bankreg=$D500+7'],
       expect: ['lda bankreg+3'], bytes: cartImage(8, [0xAD, 0x03, 0xD5, 0x60]) },
+    {
+        // XEGS: the fixed bank selects bank 2 and calls $8000, so the call
+        // goes to bank 2's code; an indexed select makes the next call unknown
+        name: 'cart-xegs-switch', type: 'cart', cartType: 12,
+        expect: ['jsr b2_l8000', 'b2_l8000', 'inc l0602'],
+        bytes: (() => {
+            const b = new Uint8Array(0x8000);
+            for (let i = 0; i < 3; i++) b.set([0xEE, 0x00 + i, 0x06, 0x60], i * 0x2000);   // bank i: inc $06xx / rts
+            b.set([0xA9, 0x02, 0x8D, 0x00, 0xD5, 0x20, 0x00, 0x80,                          // lda #2 sta $D500 jsr $8000
+                0x9D, 0x00, 0xD5, 0x20, 0x00, 0x80, 0x60], 0x6000);                         // sta $D500,x jsr $8000 rts
+            b.set([0x00, 0xA0, 0x00, 0x04, 0x00, 0xA0], 0x7FFA);
+            return b;
+        })(),
+        problems: [/jsr \$8000 at \$A00B goes into the bank window \$8000-\$9FFF/],
+    },
+    // ... and a bank directive resolves it
+    { name: 'cart-xegs-bank-directive', type: 'cart', cartType: 12, directives: ['bank $A00B 1'],
+      expect: ['jsr b1_l8000', 'inc l0601'], bytesFrom: 'cart-xegs-switch' },
     // every Atari symbol set at once, in priority order
     { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
     { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,
@@ -262,6 +281,7 @@ if (fs.existsSync(exampleDir)) {
 
 let failed = 0;
 for (const c of cases) {
+    if (c.bytesFrom) c.bytes = cases.find((x) => x.name === c.bytesFrom).bytes;
     let file = c.bytes ? path.join(OUT, c.name + '.bin') : path.resolve(HOME, c.file || c.project);
     if (c.bytes) fs.writeFileSync(file, c.bytes);
     if (!fs.existsSync(file)) {
@@ -351,6 +371,11 @@ for (const c of cases) {
         const same = X.sameCode(model, X.analyze(img, X.allDirectives(pruned), project.options));
         results.push(`unneeded ${removable.size}/${sc.total}: ${same ? 'joint removal ok' : 'JOINT REMOVAL CHANGES CODE'}`);
         ok = ok && same;
+    }
+    for (const re of c.problems || []) {
+        const found = model.warnings.some((w) => re.test(w.msg));
+        results.push(`problem ${re}: ${found ? 'found' : 'MISSING'}`);
+        ok = ok && found;
     }
     for (const re of c.expectRe || []) {
         const found = re.test(asm);
