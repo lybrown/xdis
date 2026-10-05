@@ -365,7 +365,7 @@
 
     // The Access/Callers comment with each reference as a link.
     function xrefHtml(ln) {
-        const r = ln.k === 'equ' ? S.listing.refsFor(lineKey(ln)) : S.model.refs.get(lineKey(ln));
+        const r = ln.k === 'equ' || ln.k === 'mid' ? S.listing.refsFor(lineKey(ln)) : S.model.refs.get(lineKey(ln));
         if (!r) return esc(ln.x);
         const keys = new Map();
         for (const k of r.access.concat(r.callers)) {
@@ -1191,7 +1191,7 @@
         const l = S.model.labelAt(k);
         const [kc, kn] = kindOf(ln);
         const T = S.model.S[ln.s - 1];
-        const r = (ln.k === 'equ' ? S.listing.refsFor(k) : S.model.refs.get(k)) || { callers: [], access: [] };
+        const r = (ln.k === 'equ' || ln.k === 'mid' ? S.listing.refsFor(k) : S.model.refs.get(k)) || { callers: [], access: [] };
         const userName = l && l.user && !l.off ? l.name : '';
         const comment = S.model.comments.get(k) || '';
         const note = S.model.notes.get(k) || '';
@@ -1574,10 +1574,11 @@
 
     async function halfSuggestion(p) {
         const d = p.suggest;
-        const name = (/#>(\S+)$/.exec(p.msg) || [])[1] || '';
-        const btn = await ask('Show as the high byte of an address',
+        const name = (/#[<>](\S+)$/.exec(p.msg) || [])[1] || '';
+        const hi = d.type === 'hi';
+        const btn = await ask(`Show as the ${hi ? 'high' : 'low'} byte of an address`,
             `<p>${esc(p.msg.replace(/ — click.*/, ''))}.</p>
-             <pre class="mono">    lda #&gt;${esc(name)}	; $${X.h4(d.addr - 1)}</pre>
+             <pre class="mono">    lda #${hi ? '&gt;' : '&lt;'}${esc(name)}	; $${X.h4(d.addr - 1)}</pre>
              <p class="dim">Adds <code>${esc(X.directiveString(d))}</code></p>`,
             [{ label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]);
         if (btn !== 'ok') return;
@@ -1595,7 +1596,7 @@
         if (p.suggest) {
             goKey(p.k);
             if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest);
-            else if (p.suggest.type === 'hi') halfSuggestion(p);
+            else if (p.suggest.type === 'hi' || p.suggest.type === 'lo') halfSuggestion(p);
             else pointerSuggestion(p);
             return;
         }

@@ -96,6 +96,10 @@ const cases = [
     { name: 'override-refs', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json',
       directives: ['data pmdata=$4300', 'operand 5:$4800 #>pmdata', 'lo 5:$4801 $1243'],
       expect: ['lda #>pmdata', 'pmdata equ $4300'] },
+    // self-modifying jmp: writes into its operand become #<handler / #>handler
+    { name: 'bomb-jack-selfmod', project: 'xdis/examples/bomb-jack-v1.5.xdis.json', pointers: true,
+      directives: ['label dlivec=3:$55AC+1'],
+      expect: ['dlivec equ *+1', 'lda #<s3l5595', 'sta dlivec', 'lda #>s3l5140', 'sta dlivec+1'] },
     // every Atari symbol set at once, in priority order
     { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
     { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,

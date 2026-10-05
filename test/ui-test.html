@@ -457,6 +457,33 @@ function check(name, ok, detail) {
         log('skip', 'relocation: ' + PROJ + ' not found');
     }
 
+    // 13. self-modifying jmp in the bomb jack example: a low byte written
+    // into the jmp operand
+    const BJ = 'examples/bomb-jack-v1.5.xdis.json';
+    if ((await fetch('../' + BJ, { method: 'HEAD' })).ok) {
+        frame.src = '../index.html?project=' + BJ;
+        await new Promise((r) => frame.onload = r);
+        const w3 = frame.contentWindow, d3 = w3.document;
+        for (let i = 0; i < 300 && !(w3.xdis && w3.xdis.listing); i++) await sleep(50);
+        const S3 = w3.xdis;
+        const waitFor3 = async (cond) => { for (let i = 0; i < 300 && !cond(); i++) await sleep(10); return cond(); };
+        d3.querySelector('[data-tab=problems]').click();
+        await sleep(30);
+        const sp = Array.from(d3.querySelectorAll('#problem-list .problem.suggest')).find((x) => /at \$558D is the low byte of \$5595/.test(x.textContent));
+        check('low byte write into jmp operand suggested', !!sp, sp && sp.textContent);
+        if (sp) {
+            sp.click();
+            await waitFor3(() => d3.getElementById('dlg').open);
+            check('dialog previews #<', /lda #<s3l5595/.test(d3.getElementById('dlg-body').textContent));
+            d3.querySelector('#dlg button[value=ok]').click();
+            const l558D = () => S3.listing.lines.find((l) => l.s === 3 && l.a === 0x558D && l.k === 'ins');
+            await waitFor3(() => /#<s3l5595/.test(l558D().p.map((p) => p[1]).join('')));
+            check('$558D shows #<s3l5595', /#<s3l5595/.test(l558D().p.map((p) => p[1]).join('')), l558D().p.map((p) => p[1]).join(''));
+        }
+    } else {
+        log('skip', 'self-modifying jmp: ' + BJ + ' not found');
+    }
+
     document.title = failures ? `FAIL ${failures}` : 'PASS';
     log(failures ? 'fail' : 'pass', `${failures} failure(s)`);
     // expose the final asm for inspection

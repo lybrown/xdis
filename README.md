@@ -145,6 +145,14 @@ pointers used for data become `address`. On Atari, an immediate stored into a
 page register (`PMBASE`, `CHBASE`, `CHBAS`) is suggested as `hi` when that page
 is loaded or has a label. `DLISTL` and `SDLSTL` count as pointers.
 
+Self-modifying jumps are covered too. The operand of a `jmp`/`jsr abs` counts as
+a code pointer, so immediates written into it are suggested as `codeptr` pairs,
+or as `lo` when only the low byte is written. In that case the page is taken
+from the writer's own page, or from the operand's current high byte, whichever
+lands on code. Name the operand with a 2-byte label, e.g.
+`label dlivec=3:$55AC+1`, to get `dlivec equ *+1` and `sta dlivec` /
+`sta dlivec+1`.
+
 The *Problems* panel lists load, trace and label warnings. Click one to
 jump to the address it concerns, or to the directive that caused it.
 

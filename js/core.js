@@ -809,6 +809,15 @@
             return !!(T && T.ilen[keyAddr(k) - T.seg.start]);
         }
 
+        // The segment an address refers to from code in segment T: T itself if
+        // it loads that address (overlays!), otherwise whatever is there last.
+        function segFor(T, a) {
+            const sg = T.seg;
+            if (a >= sg.start && a <= sg.end &&
+                !(R.holesOf.get(sg.index) || []).some((p) => a >= p.load && a < p.load + p.data.length)) return sg.index;
+            return finalOwner[a];
+        }
+
         // hi/lo: single bytes that are one half of an address
         for (const d of directives) {
             if (d.type !== 'hi' && d.type !== 'lo') continue;
@@ -827,7 +836,7 @@
                     warn(`${directiveString(d)}: the byte at $${h4(a)} is $${h2(b)}, not the ${d.type === 'hi' ? 'high' : 'low'} byte of $${h4(t)}`, key(s, a), d);
                     continue;
                 }
-                const ts = finalOwner[t];
+                const ts = segFor(T, t);
                 need.add(key(ts, t));
                 T.ptr.set(o, { t, ts, part: d.type === 'hi' ? '>' : '<', other: -1 });
             }
@@ -958,19 +967,31 @@
                 if ((POINTER_TYPES.includes(d.type) || d.range >= 1) && d.hi === undefined && d.type !== 'relocate') ptrUse.add(d.addr);
                 if (d.type === 'vector') jumpVec.add(d.addr);
             }
+            const jumpAt = new Map();        // operand address of jmp/jsr abs -> instruction
             const lists = S.map((T) => instructionsOf(T));
             lists.forEach((ins) => {
                 for (const x of ins) {
                     if (x.op.mode === 'izy' || x.op.mode === 'izx') { ptrUse.add(x.lo); dataPtr.add(x.lo); }
                     if (x.op.mode === 'ind') { ptrUse.add(x.w); jumpVec.add(x.w); }
+                    // writing a jmp/jsr operand is self-modifying code: a code pointer
+                    if ((x.op.mn === 'jmp' || x.op.mn === 'jsr') && x.op.mode === 'abs') {
+                        ptrUse.add(x.a + 1);
+                        jumpVec.add(x.a + 1);
+                        if (!jumpAt.has(x.a + 1)) jumpAt.set(x.a + 1, x);
+                    }
                 }
             });
             // only loaded memory counts as evidence; labels from symbol sets
             // on unloaded addresses say nothing about these bytes
-            const isTarget = (t) => {
-                if (!finalOwner[t]) return null;
-                const k = key(finalOwner[t], t);
+            const isTarget = (t, T) => {
+                const ts = segFor(T, t);
+                if (!ts) return null;
+                const k = key(ts, t);
                 return isCodeStart(k) ? 'code' : labelAt(k) ? 'label' : null;
+            };
+            const nameAt = (T, a) => {
+                const l = labelAt(key(segFor(T, a), a));
+                return l && !l.off ? l.name : null;
             };
             const isIO = (a) => a >= 0xD000 && a <= 0xDFFF;
             const out = [];
@@ -985,7 +1006,12 @@
                 const segIdx = T.seg.index;
                 let regs = {};
                 let stores = new Map();         // P -> {v, at, i}
-                const reset = () => { regs = {}; stores = new Map(); };
+                const reset = () => {
+                    // a low byte written into a jump operand on its own
+                    for (const [P, st] of stores) if (jumpAt.has(P) && !stores.has(P + 1)) lowOnly(T, st, P);
+                    regs = {};
+                    stores = new Map();
+                };
                 ins.forEach((x, i) => {
                     // a branch target starts a new block
                     const r = refs.get(key(segIdx, x.a));
@@ -1019,8 +1045,34 @@
                         if (WRITES[g].test(mn) && !((mn === 'ld' + g) && x.op.mode === 'imm')) delete regs[g];
                     }
                 });
+                reset();
             });
             return out;
+
+            // An immediate written only into the low byte of a jmp/jsr operand
+            // keeps the page: try the writer's page and the operand's current
+            // high byte, and take the one that lands on code.
+            function lowOnly(T, st, P) {
+                if (seen.has(st.at) || overridden(T, st.at)) return;
+                const Tb = segOf(key(T.seg.index, st.at));
+                if (!Tb || Tb.ptr.has(st.at - Tb.seg.start)) return;
+                const TP = S[segFor(T, P + 1) - 1];
+                const pages = [(st.at - 1) >> 8];
+                if (TP) pages.push(TP.seg.data[P + 1 - TP.seg.start]);
+                const hp = pages.find((h) => isTarget(st.v | (h << 8), T) === 'code');
+                if (hp === undefined) return;
+                const t = st.v | (hp << 8);
+                seen.add(st.at);
+                const jx = jumpAt.get(P);
+                const pname = nameAt(T, P) || '$' + h4(P);
+                const tname = nameAt(T, t) || 'l' + h4(t);
+                out.push({
+                    at: key(T.seg.index, st.at - 1),
+                    dir: { type: 'lo', name: null, seg: cover[st.at] > 1 ? T.seg.index : 0, addr: st.at, range: 0, target: t },
+                    msg: `#$${h2(st.v)} at $${h4(st.at - 1)} is the low byte of $${h4(t)}, the new target of ${jx.op.mn} at ` +
+                        `$${h4(jx.a)} (stored into ${pname}) — click to show it as #<${tname}`,
+                });
+            }
 
             // an immediate stored into a page register: the page of a label or
             // of loaded memory
@@ -1032,8 +1084,8 @@
             function page(T, r, P) {
                 if (!r.v || seen.has(r.at) || overridden(T, r.at)) return;
                 const t = r.v << 8;
-                const l = labelAt(key(finalOwner[t], t));
-                if (!finalOwner[t] && !(l && l.user)) return;
+                const l = labelAt(key(segFor(T, t), t));
+                if (!segFor(T, t) && !(l && l.user)) return;
                 const Tb = segOf(key(T.seg.index, r.at));
                 if (!Tb || Tb.ptr.has(r.at - Tb.seg.start)) return;
                 seen.add(r.at);
@@ -1051,7 +1103,7 @@
                 if (overridden(T, lo.at) || overridden(T, hi.at)) return;
                 const t = lo.v | (hi.v << 8);
                 if (t < 0x100) return;
-                const target = isTarget(t);
+                const target = isTarget(t, T);
                 const viaJsr = typeof via === 'number';
                 if (viaJsr) {
                     if (!target) return;                 // registers: need loaded code or a label
@@ -1069,15 +1121,13 @@
                 const code = viaJsr ? target === 'code'
                     : jumpVec.has(P) || (target === 'code' && !dataPtr.has(P));
                 const dir = { type: code ? 'codeptr' : 'address', name: null, seg: scoped(lo.at), addr: lo.at, range: 0, hi: hi.at };
-                const tl = labelAt(key(finalOwner[t], t));
-                const tname = tl && !tl.off ? tl.name : 'l' + h4(t);
+                const tname = nameAt(T, t) || 'l' + h4(t);
                 let where;
                 if (viaJsr) {
-                    const rl = labelAt(key(finalOwner[via], via));
-                    where = `passed to ${rl && !rl.off ? rl.name : '$' + h4(via)}`;
+                    where = `passed to ${nameAt(T, via) || '$' + h4(via)}`;
                 } else {
-                    const pl = labelAt(key(finalOwner[P], P));
-                    where = `stored into ${pl && !pl.off ? pl.name : '$' + h4(P)}`;
+                    const jx = jumpAt.get(P);
+                    where = `stored into ${nameAt(T, P) || '$' + h4(P)}${jx ? `, the operand of ${jx.op.mn} at $${h4(jx.a)}` : ''}`;
                 }
                 out.push({
                     at: key(T.seg.index, Math.min(lo.at, hi.at) - 1),
@@ -1199,7 +1249,7 @@
                 lines.push({
                     k: 'mid', s: T.seg.index, a, n: 0, def: k,
                     p: [['lbl', l.name, k], ['dir', ' equ '], ['num', '*+' + mid]],
-                    c: '', x: xrefs(k, 'access'),
+                    c: '', x: xrefs(k, 'access', true),
                 });
             } else {
                 lines.push({ k: 'label', s: T.seg.index, a, n: 0, def: k, p: [['lbl', l.name, k]], c: '', x: xrefs(k, 'callers') });
