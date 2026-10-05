@@ -44,6 +44,8 @@ if (fs.existsSync(example)) {
     fs.writeFileSync(path.join(OUT, 'galaxian-norel.xdis.json'), X.serializeProject(project, bytes, true));
 }
 
+const ATARI_SETS = ['atarixl', 'hardware', 'sys', 'atarifp', 'basic', 'dos'].map((n) => `symbols/${n}.dop`);
+
 const cases = [
     {
         name: 'esmc', file: 'escm/Educational System Master Cartridge (Atari).bin',
@@ -84,6 +86,12 @@ const cases = [
       options: { syntax: 'mads' }, mads: true, expect: ['lda #>lBA45'] },
     { name: 'bomber-pointers', file: 'bomber/bomber.xex', include: ['symbols/sys.dop', 'symbols/hardware.dop'], pointers: true,
       expect: ['#>l7ED5', '#<l7ED5'] },
+    // every Atari symbol set at once, in priority order
+    { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
+    { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,
+      expect: ['CARTCS', 'CARTAD'] },
+    { name: 'esmc-allsyms', file: 'escm/Educational System Master Cartridge (Atari).bin', type: 'raw', org: 0xA000,
+      include: ATARI_SETS, expect: ['dta a(lB800)', 'CARTFG'] },
     {
         // zero page code with a forward reference: xasm needs "z:" or it
         // assembles lda l0085 as absolute
@@ -174,6 +182,14 @@ function instrAddrs(asm) {
     return set;
 }
 
+// every project in examples/ (ignored by git) is round-tripped as is
+const exampleDir = path.join(__dirname, '..', 'examples');
+if (fs.existsSync(exampleDir)) {
+    for (const f of fs.readdirSync(exampleDir).filter((n) => n.endsWith('.json')).sort()) {
+        cases.push({ name: 'example-' + f.replace(/\.json$/, '').replace(/\W+/g, '-').replace(/-+$/, ''), project: 'xdis/examples/' + f });
+    }
+}
+
 let failed = 0;
 for (const c of cases) {
     let file = c.bytes ? path.join(OUT, c.name + '.bin') : path.join(HOME, c.file || c.project);
@@ -193,6 +209,7 @@ for (const c of cases) {
         c.type = project.binary.type;
         c.org = project.binary.org;
     }
+    if (c.include && c.project) project.includes = [];
     for (const inc of c.include || []) {
         project.includes.push({ name: path.basename(inc), text: fs.readFileSync(path.join(__dirname, '..', inc), 'utf8') });
     }

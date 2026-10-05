@@ -422,3 +422,10 @@ data USAREA=$480
 
 data RUNAD=$2E0+1
 data INITAD=$2E2+1
+
+;       CARTRIDGE HEADER (names from cc65 asminc/atari.inc)
+
+vector CARTCS=$BFFA+1                ;CARTRIDGE COLDSTART ADDRESS
+data CART=$BFFC                      ;CARTRIDGE PRESENT INDICATOR (0=CART EXISTS)
+data CARTFG=$BFFD                    ;CARTRIDGE FLAGS
+vector CARTAD=$BFFE+1                ;CARTRIDGE START VECTOR

@@ -36,7 +36,23 @@ Loading
   or `?project=game.xdis.json`.
 
 Built-in symbol sets (under *Directives*) are the dis option files from
-`symbols/`: Atari hardware and OS equates, plus C64 6510, VIC, SID and CIA.
+`symbols/`:
+
+| Set | Contents |
+| --- | --- |
+| `hardware.dop`, `sys.dop` | Atari hardware registers and 400/800 OS equates, including the cartridge header (`CARTCS`, `CART`, `CARTFG`, `CARTAD`) |
+| `atarixl.dop` | XL/XE OS: locations added or moved by the 1200XL and XL/XE OS |
+| `atarifp.dop` | Floating point package registers, buffers and ROM routines |
+| `basic.dop` | Atari BASIC page zero and math routines |
+| `dos.dop` | DOS and SpartaDOS X |
+| `6510.dop`, `vic.dop`, `sid.dop`, `cia.dop` | Commodore 64 |
+
+When two sets name the same thing, the earlier one wins. Your own imported
+files come first, then `atarixl.dop` (so XL/XE addresses replace 400/800 ones),
+then the rest. Built-in sets always use the current text, even in older
+projects. `atarixl.dop`, `atarifp.dop`, `basic.dop` and `dos.dop` are generated
+from cc65's `asminc/atari.inc` by `tools/harvest-cc65.py`. Run
+`tools/embed-symbols.py` after changing anything in `symbols/`.
 
 Saving
 ------

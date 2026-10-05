@@ -1296,7 +1296,30 @@
             const inc = p.includes.find((i) => i.name === name);
             if (inc) inc.enabled = on;
             else if (SYM.files[name]) p.includes.push({ name, text: SYM.files[name], enabled: true });
+            sortIncludes(p);
         }, `${on ? 'Enabled' : 'Disabled'} ${name}`);
+    }
+
+    // Symbol set priority (earlier wins): your own imported files, then the
+    // built-in sets in their canonical order (atarixl.dop before sys.dop).
+    // Built-in symbol sets always use the current built-in text, so fixes and
+    // additions reach existing projects. Files you imported keep their text.
+    function refreshBuiltins(p) {
+        for (const inc of p.includes) {
+            if (!inc.custom && SYM.files[inc.name] && inc.text !== SYM.files[inc.name]) {
+                inc.text = SYM.files[inc.name];
+                inc.parsed = null;
+            }
+        }
+        sortIncludes(p);
+    }
+
+    function sortIncludes(p) {
+        const order = SYM.order || [];
+        const rank = (i) => (!i.custom && order.includes(i.name) ? order.indexOf(i.name) : -1);
+        const custom = p.includes.filter((i) => rank(i) < 0);
+        const builtin = p.includes.filter((i) => rank(i) >= 0).sort((x, y) => rank(x) - rank(y));
+        p.includes = custom.concat(builtin);
     }
 
     // ------------------------------------------------------------------
@@ -1716,6 +1739,7 @@
                 if (!S.project.includes.some((i) => i.name === f)) S.project.includes.push({ name: f, text: SYM.files[f], enabled: true });
             }
         }
+        sortIncludes(S.project);
         S.project.binary = { name: file.name, type, org: org & 0xFFFF, size: bytes.length };
         S.bytes = bytes;
         S.back = [];
@@ -1734,6 +1758,7 @@
         }
         S.project = res.project;
         S.bytes = res.bytes;
+        refreshBuiltins(S.project);
         S.undo = [];
         S.redo = [];
         S.importProblems = [];
@@ -1764,7 +1789,7 @@
                 problems.push(...r.errors);
                 if (asInclude || referenced.has(name)) {
                     const old = p.includes.findIndex((i) => i.name === name);
-                    const inc = { name, text: texts.get(name), enabled: true };
+                    const inc = { name, text: texts.get(name), enabled: true, custom: true };
                     if (old >= 0) p.includes[old] = inc;
                     else p.includes.push(inc);
                     continue;
@@ -1779,6 +1804,7 @@
                 if (SYM.files[a]) p.includes.push({ name: a, text: SYM.files[a], enabled: true });
                 else problems.push(`arg ${a}: not found — select it together with the .dop, or add it under Directives → Symbol sets`);
             }
+            sortIncludes(p);
         }, `Imported ${files.map((f) => f.name).join(', ')}`);
         S.importProblems = problems;
         updateProblems();
@@ -1827,6 +1853,7 @@
             const res = X.deserializeProject(s);
             S.project = res.project;
             S.bytes = res.bytes;
+            refreshBuiltins(S.project);
             rebuild({ reload: true, keepView: false });
             const pos = JSON.parse(localGet('xdis.pos') || 'null');
             if (pos && S.listing) {
@@ -2157,6 +2184,7 @@
                 const res = X.deserializeProject(await get(q.get('project')));
                 S.project = res.project;
                 S.bytes = res.bytes;
+                refreshBuiltins(S.project);
             }
             if (q.get('bin')) {
                 const url = q.get('bin');

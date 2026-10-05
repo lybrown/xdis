@@ -538,6 +538,7 @@
         const comments = new Map();
         const notes = new Map();
         const operands = new Map();
+        const nameOwner = new Map();     // label name -> key of its first definition
         function addLabel(k, name, off, base, d) {
             const prev = labels.get(k);
             if (prev && (prev.off === 0 || off > 0)) return;
@@ -563,6 +564,12 @@
             }
             if (!d.name) continue;
             const base = key(resolveSeg(d, d.addr), d.addr);
+            // A symbol set can't reuse a name defined earlier (by the project
+            // or a higher priority set): its directive still counts for
+            // tracing, it just doesn't name anything.
+            const owner = nameOwner.get(d.name);
+            if (owner === undefined) nameOwner.set(d.name, base);
+            else if (owner !== base && d.from) continue;
             for (let off = 0; off <= d.range; off++) {
                 const a = d.addr + off;
                 if (a > 0xFFFF) { warn(`Out of range ${d.type}: ${specString(d)}`, undefined, d); break; }
@@ -1621,7 +1628,9 @@
         const out = project.directives.slice();
         for (const inc of project.includes || []) {
             if (inc.enabled === false) continue;
-            if (!inc.parsed) inc.parsed = parseDop(inc.text, inc.name).directives;
+            if (!inc.parsed) {
+                inc.parsed = parseDop(inc.text, inc.name).directives.map((d) => Object.assign(d, { from: inc.name }));
+            }
             out.push(...inc.parsed);
         }
         return out;
@@ -1687,7 +1696,10 @@
             xdis: 1,
             binary: project.binary && Object.assign({}, project.binary, { data: undefined }),
             options: project.options,
-            includes: (project.includes || []).map((i) => ({ name: i.name, enabled: i.enabled !== false, text: i.text })),
+            includes: (project.includes || []).map((i) => ({
+                name: i.name, enabled: i.enabled !== false, text: i.text,
+                ...(i.custom ? { custom: true } : {}),
+            })),
             directives: project.directives.map(directiveString),
         };
         if (embed && bytes && p.binary) p.binary.data = toBase64(bytes);
@@ -1705,7 +1717,9 @@
             bytes = fromBase64(project.binary.data);
             delete project.binary.data;
         }
-        project.includes = (p.includes || []).map((i) => ({ name: i.name, enabled: i.enabled !== false, text: i.text }));
+        project.includes = (p.includes || []).map((i) => ({
+            name: i.name, enabled: i.enabled !== false, text: i.text, ...(i.custom ? { custom: true } : {}),
+        }));
         project.directives = (p.directives || []).map((s) => {
             const d = parseDirectiveLine(s);
             if (!d) throw new Error('Bad directive: ' + s);
