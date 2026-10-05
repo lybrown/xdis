@@ -36,7 +36,7 @@ if (fs.existsSync(uiBin)) fs.copyFileSync(uiBin, path.join(OUT, 'ransack.xex'));
 const example = path.join(__dirname, '..', 'examples', 'Galaxian_PLUS_v2.xdis.json');
 if (fs.existsSync(example)) {
     const { project, bytes } = X.deserializeProject(fs.readFileSync(example, 'utf8'));
-    const img = X.loadImage(bytes, project.binary.type, project.binary.org);
+    const img = X.loadImage(bytes, project.binary.type, project.binary.org, project.binary.cartType);
     for (const d of project.directives.filter((x) => x.type === 'relocate')) {
         const m = X.analyze(img, X.allDirectives(project), project.options);
         project.directives = X.edit.removeRelocation(project.directives, m, d);
@@ -107,6 +107,23 @@ const cases = [
       expectRe: [/^ +:\d+ dta (\$[0-9A-F]{2},){7}\$/m] },
     { name: 'bomb-jack-patterns-mads', project: 'xdis/examples/bomb-jack-v1.5.xdis.json',
       options: { patternMax: 16, syntax: 'mads' }, mads: true, expectRe: [/^ +:\d+ dta \$[0-9A-F]{2},/m] },
+    // cartridges (.car), from the Downloads folder when present
+    ...[['abasic', 'old/abasic.car'], ['hero', 'old/H.E.R.O..car'], ['williams', 'Red Max.car'],
+        ['xegs', 'wee_a8_rc5.car'], ['atarimax', 'scorch.car'], ['sic', 'old/CosmicHero2Prologue.car']]
+        .map(([n, f]) => ({ name: 'car-' + n, file: '/mnt/c/Users/lyren/Downloads/' + f, include: ['symbols/sys.dop', 'symbols/hardware.dop'] })),
+    { name: 'car-xegs-mads', file: '/mnt/c/Users/lyren/Downloads/wee_a8_rc5.car', options: { syntax: 'mads' }, mads: true,
+      include: ['symbols/sys.dop'], expect: ['Bank 7: $A000-$BFFF (visible at power-on)', 'CARTCS'] },
+    {
+        // a raw XEGS 32 KB dump (type 12): banks 0-2 at $8000, bank 3 fixed at $A000
+        name: 'cart-raw-xegs', type: 'cart', cartType: 12, expect: ['Bank 3: $A000-$BFFF (visible at power-on)', 'org $8000'],
+        bytes: (() => {
+            const b = new Uint8Array(0x8000);
+            for (let i = 0; i < 4; i++) b.fill(0x11 * (i + 1), i * 0x2000, i * 0x2000 + 0x100);
+            b.set([0xA9, 0x00, 0x8D, 0x00, 0xD5, 0x4C, 0x00, 0x80], 0x6000);        // bank 3 at $A000: lda #0 sta $D500 jmp $8000
+            b.set([0x00, 0xA0, 0x00, 0x04, 0x00, 0xA0], 0x7FFA);                    // CARTCS=$A000, flags, CARTAD=$A000
+            return b;
+        })(),
+    },
     // every Atari symbol set at once, in priority order
     { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
     { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,
@@ -229,7 +246,7 @@ if (fs.existsSync(exampleDir)) {
 
 let failed = 0;
 for (const c of cases) {
-    let file = c.bytes ? path.join(OUT, c.name + '.bin') : path.join(HOME, c.file || c.project);
+    let file = c.bytes ? path.join(OUT, c.name + '.bin') : path.resolve(HOME, c.file || c.project);
     if (c.bytes) fs.writeFileSync(file, c.bytes);
     if (!fs.existsSync(file)) {
         console.log(`SKIP ${c.name}: ${c.file || c.project} not found`);
@@ -259,9 +276,9 @@ for (const c of cases) {
     }
     for (const d of c.directives || []) project.directives.push(X.parseDirectiveLine(d));
     Object.assign(project.options, c.options || {});
-    if (c.edits) applyEdits(project, X.loadImage(bytes, type, org));
+    if (c.edits) applyEdits(project, X.loadImage(bytes, type, org, c.cartType));
     if (c.relocate) {
-        const img0 = X.loadImage(bytes, type, org);
+        const img0 = X.loadImage(bytes, type, org, c.cartType);
         const m0 = X.analyze(img0, X.allDirectives(project), project.options);
         for (const w of m0.warnings) {
             if (w.suggest && w.suggest.type === 'relocate') project.directives = X.edit.addRelocation(project.directives, img0, w.suggest);
@@ -269,7 +286,7 @@ for (const c of cases) {
     }
     if (c.pointers) {
         // apply pointer suggestions until no new ones appear
-        const img0 = X.loadImage(bytes, type, org);
+        const img0 = X.loadImage(bytes, type, org, c.cartType);
         for (let round = 0; round < 5; round++) {
             const m0 = X.analyze(img0, X.allDirectives(project), project.options);
             const add = m0.warnings.filter((w) => w.suggest && w.suggest.type !== 'relocate').map((w) => w.suggest);
@@ -279,7 +296,7 @@ for (const c of cases) {
     }
 
     const t0 = Date.now();
-    const img = X.loadImage(bytes, type, org);
+    const img = X.loadImage(bytes, type, org, c.cartType);
     const model = X.analyze(img, X.allDirectives(project), project.options);
     const listing = X.render(model);
     const asm = X.asmText(listing, project.options);

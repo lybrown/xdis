@@ -81,6 +81,7 @@
 
     function detectType(name, bytes) {
         const ext = (name || '').toLowerCase().split('.').pop();
+        if (bytes.length >= 16 && String.fromCharCode(...bytes.subarray(0, 4)) === 'CART') return 'car';
         if (['xex', 'com', 'exe', 'obx'].includes(ext)) return 'xex';
         if (ext === 'prg') return 'prg';
         if (ext === 'sap') return 'sap';
@@ -205,11 +206,92 @@
         addSegment(img, start, bytes.subarray(2));
     }
 
-    function loadImage(bytes, type, org) {
+    // ------------------------------------------------------------------
+    // Atari cartridges (atari800's DOC/cart.txt). Each block of the image
+    // becomes a segment at its window address; `boot` lists the blocks
+    // visible at power-on, which are analyzed last so that global
+    // directives (and the header vectors) refer to them.
+
+    const blocks = (size, at, boot) => ({ size, at, boot });
+    const xegs = blocks(0x2000, (i, n) => (i === n - 1 ? 0xA000 : 0x8000), (n) => [0, n - 1]);
+    const williams = blocks(0x2000, () => 0xA000, () => [0]);
+    const megacart = blocks(0x4000, () => 0x8000, () => [0]);
+    const sic = blocks(0x2000, (i) => (i & 1 ? 0xA000 : 0x8000), () => [1]);
+    const CART_TYPES = {
+        1: ['Standard 8 KB', blocks(0x2000, () => 0xA000, () => [0])],
+        2: ['Standard 16 KB', blocks(0x4000, () => 0x8000, () => [0])],
+        57: ['Standard 2 KB', blocks(0x800, () => 0xB800, () => [0])],
+        58: ['Standard 4 KB', blocks(0x1000, () => 0xB000, () => [0])],
+        8: ['Williams 64 KB', williams], 22: ['Williams 32 KB', williams], 76: ['Williams 16 KB', williams],
+        12: ['XEGS 32 KB', xegs], 13: ['XEGS 64 KB (banks 0-7)', xegs], 67: ['XEGS 64 KB (banks 8-15)', xegs],
+        14: ['XEGS 128 KB', xegs], 23: ['XEGS 256 KB', xegs], 24: ['XEGS 512 KB', xegs], 25: ['XEGS 1 MB', xegs],
+        33: ['Switchable XEGS 32 KB', xegs], 34: ['Switchable XEGS 64 KB', xegs], 35: ['Switchable XEGS 128 KB', xegs],
+        36: ['Switchable XEGS 256 KB', xegs], 37: ['Switchable XEGS 512 KB', xegs], 38: ['Switchable XEGS 1 MB', xegs],
+        41: ['Atarimax 128 KB', williams],
+        42: ['Atarimax 1 MB (old, boots bank $7F)', blocks(0x2000, () => 0xA000, (n) => [n - 1])],
+        75: ['Atarimax 1 MB (new)', williams],
+        54: ['SIC! 128 KB', sic], 55: ['SIC! 256 KB', sic], 56: ['SIC! 512 KB', sic],
+        26: ['MegaCart 16 KB', megacart], 27: ['MegaCart 32 KB', megacart], 28: ['MegaCart 64 KB', megacart],
+        29: ['MegaCart 128 KB', megacart], 30: ['MegaCart 256 KB', megacart], 31: ['MegaCart 512 KB', megacart],
+        32: ['MegaCart 1 MB', megacart], 64: ['MegaCart 2 MB', megacart],
+    };
+    const CART_SIZES = {
+        1: 8, 2: 16, 57: 2, 58: 4, 8: 64, 22: 32, 76: 16, 12: 32, 13: 64, 67: 64, 14: 128, 23: 256, 24: 512, 25: 1024,
+        33: 32, 34: 64, 35: 128, 36: 256, 37: 512, 38: 1024, 41: 128, 42: 1024, 75: 1024, 54: 128, 55: 256, 56: 512,
+        26: 16, 27: 32, 28: 64, 29: 128, 30: 256, 31: 512, 32: 1024, 64: 2048,
+    };
+
+    // Supported cartridge types whose size matches `bytes` (raw dumps).
+    function cartTypesFor(size) {
+        return Object.keys(CART_TYPES).map(Number).filter((t) => CART_SIZES[t] * 1024 === size)
+            .map((t) => ({ type: t, name: CART_TYPES[t][0] }));
+    }
+
+    function parseCart(bytes, img, cartType) {
+        let data = bytes;
+        if (img.type === 'car') {
+            if (String.fromCharCode(...bytes.subarray(0, 4)) !== 'CART') throw new Error('Not a CAR file');
+            cartType = ((bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7]) >>> 0;
+            data = bytes.subarray(16);
+            img.prelude.push({ text: 'opt h-' });
+            img.prelude.push({ text: `dta c'CART',${Array.from(bytes.subarray(4, 16), (b) => '$' + h2(b)).join(',')}`, comment: 'CAR header' });
+        } else {
+            img.prelude.push({ text: 'opt h-' });
+        }
+        img.cartType = cartType;
+        let desc = CART_TYPES[cartType];
+        if (!desc) {
+            img.warnings.push(`Cartridge type ${cartType} is not supported yet; showing 8 KB banks at $A000`);
+            desc = ['Unknown', williams];
+        }
+        img.cartName = desc[0];
+        const { size, at, boot } = desc[1];
+        const n = Math.ceil(data.length / size);
+        for (let i = 0; i < n; i++) {
+            const seg = addSegment(img, at(i, n), data.subarray(i * size, (i + 1) * size));
+            seg.bank = i;
+            seg.tag = 'b' + i;
+            seg.prefix = 'b' + i + '_';
+        }
+        img.boot = new Set(boot(n).filter((i) => i < n).map((i) => i + 1));
+        // the header of the cartridge visible at power-on
+        img.entries.push(
+            { type: 'vector', name: null, seg: 0, addr: 0xBFFA, range: 1 },
+            { type: 'vector', name: null, seg: 0, addr: 0xBFFE, range: 1 });
+    }
+
+    function loadImage(bytes, type, org, cartType) {
         const img = {
             type, org: org || 0, size: bytes.length,
             segments: [], entries: [], prelude: [], extra: null, warnings: [],
         };
+        if (type === 'car' || type === 'cart') {
+            parseCart(bytes, img, cartType);
+            img.multi = img.banked = true;
+            segTags = new Map(img.segments.map((sg) => [sg.index, sg.tag]));
+            return img;
+        }
+        segTags = null;
         if (type === 'xex') {
             parseXex(bytes, img);
         } else if (type === 'sap') {
@@ -251,7 +333,13 @@
     };
 
     const LABEL_RE = /^[A-Za-z_?@][\w?@]*$/;
-    const SPEC_RE = /^(?:([A-Za-z_?@][\w?@]*)=)?(?:(\d+):)?\$?([0-9a-fA-F]+)(?:_([0-9a-fA-F]+))?(?:\+([0-9a-fA-F]+))?$/;
+    const SPEC_RE = /^(?:([A-Za-z_?@][\w?@]*)=)?(?:(b?\d+):)?\$?([0-9a-fA-F]+)(?:_([0-9a-fA-F]+))?(?:\+([0-9a-fA-F]+))?$/;
+
+    // Segment numbers in directives: cartridge banks are written bN (bank N
+    // is segment N+1). Set for the image being worked on.
+    let segTags = null;
+    const segNum = (t) => (t[0] === 'b' ? parseInt(t.slice(1), 10) + 1 : parseInt(t, 10));
+    const segText = (n) => (segTags && segTags.get(n)) || String(n);
 
     function parseSpec(type, value) {
         const m = SPEC_RE.exec(value || '');
@@ -259,7 +347,7 @@
         const d = {
             type,
             name: m[1] || null,
-            seg: m[2] ? parseInt(m[2], 10) : 0,
+            seg: m[2] ? segNum(m[2]) : 0,
             addr: parseInt(m[4] || m[3], 16),
             range: m[5] ? parseInt(m[5], 16) : 0,
         };
@@ -272,7 +360,7 @@
 
     function specString(d) {
         let s = d.name ? d.name + '=' : '';
-        if (d.seg) s += d.seg + ':';
+        if (d.seg) s += segText(d.seg) + ':';
         s += d.hi !== undefined && d.hi !== null ? `$${hx(d.hi)}_${hx(d.addr)}` : '$' + hx(d.addr);
         if (d.range) s += '+' + hx(d.range);
         return s;
@@ -282,7 +370,7 @@
         if (d.type === 'relocate') return `relocate ${specString(d)} $${hx(d.run)}`;
         if (d.type === 'hi' || d.type === 'lo') return `${d.type} ${specString(d)}${d.target !== undefined ? ' $' + hx(d.target) : ''}`;
         if (d.type === 'comment' || d.type === 'note' || d.type === 'operand') {
-            const loc = (d.seg ? d.seg + ':' : '') + '$' + hx(d.addr);
+            const loc = (d.seg ? segText(d.seg) + ':' : '') + '$' + hx(d.addr);
             return `${d.type} ${loc} ${d.text.replace(/\\/g, '\\\\').replace(/\n/g, '\\n')}`;
         }
         return `${d.type} ${specString(d)}`;
@@ -293,10 +381,10 @@
         if (!m) return null;
         const type = ALIASES[m[1]] || m[1];
         if (type === 'comment' || type === 'note' || type === 'operand') {
-            const t = /^(?:(\d+):)?\$?([0-9a-fA-F]+)(?:\s(.*))?$/.exec(m[2]);
+            const t = /^(?:(b?\d+):)?\$?([0-9a-fA-F]+)(?:\s(.*))?$/.exec(m[2]);
             if (!t) throw new Error(`Bad ${type}: ${m[2]}`);
             const text = (t[3] || '').replace(/\\(n|\\)/g, (_, c) => (c === 'n' ? '\n' : '\\'));
-            return { type, name: null, seg: t[1] ? +t[1] : 0, addr: parseInt(t[2], 16) & 0xFFFF, range: 0, text };
+            return { type, name: null, seg: t[1] ? segNum(t[1]) : 0, addr: parseInt(t[2], 16) & 0xFFFF, range: 0, text };
         }
         if (type === 'relocate') {
             // relocate [name=][seg:]$LOAD+LEN-1 $RUN
@@ -524,9 +612,12 @@
         const R = relocations(img, directives, warn);
         directives = directives.map(R.toRun);
         const segs = real.concat(R.pieces);
+        // Analysis order: cartridge banks visible at power-on come last, so
+        // "the final memory" is the boot configuration.
+        const loadOrder = img.boot ? real.filter((s) => !img.boot.has(s.index)).concat(real.filter((s) => img.boot.has(s.index))) : real;
         // load order: each segment followed by the blocks relocated out of it
         const order = [];
-        for (const s of real) order.push(s, ...(R.holesOf.get(s.index) || []));
+        for (const s of loadOrder) order.push(s, ...(R.holesOf.get(s.index) || []));
         const finalOwner = new Int16Array(MEM);
         const cover = new Uint8Array(MEM);
         for (const s of order) {
@@ -759,10 +850,10 @@
             if (!bySeg.has(s)) bySeg.set(s, []);
             bySeg.get(s).push(d);
         }
-        const auto = img.entries.map((e) => ({ type: 'code', name: e.name || null, seg: 0, addr: e.addr, range: 0 }));
+        const auto = img.entries.map((e) => (e.type ? e : { type: 'code', name: e.name || null, seg: 0, addr: e.addr, range: 0 }));
 
         let run = null;
-        for (const s of real) {
+        for (const s of loadOrder) {
             visited.fill(0);
             mem.set(s.data, s.start);
             owner.fill(s.index, s.start, s.end + 1);
@@ -785,7 +876,7 @@
             pointer(0x2E0, 0x2E1, { type: 'run', addr: 0x2E0, range: 0 });
             trace(run.run, pseudo(`run_segment${run.index}`, { keys: [key(owner[0x2E0], 0x2E0)] }));
         }
-        if (!traced && img.multi && real.length) trace(real[0].start, pseudo('COM', { keys: [key(real[0].index, real[0].start)] }));
+        if (!traced && img.multi && !img.banked && real.length) trace(real[0].start, pseudo('COM', { keys: [key(real[0].index, real[0].start)] }));
         enter(auto.concat(bySeg.get(0) || []));
         for (const d of auto) {
             if (d.name) addLabel(key(finalOwner[d.addr], d.addr), d.name, 0, 0, d);
@@ -794,7 +885,8 @@
         // --- label lookup
         function autoName(k) {
             const s = keySeg(k), a = keyAddr(k);
-            return (s && cover[a] > 1 ? 's' + s : '') + 'l' + h4(a);
+            const sg = s && segs[s - 1];
+            return (s && cover[a] > 1 ? (sg && sg.prefix) || 's' + s : '') + 'l' + h4(a);
         }
         function labelAt(k) {
             const l = labels.get(k);
@@ -1195,7 +1287,7 @@
             const T = S[keySeg(k) - 1];
             // relocated code needs no segment unless its run address is ambiguous
             const pre = segPrefix && !(T && T.seg.reloc && model.cover[keyAddr(k)] <= 1);
-            return (pre ? keySeg(k) + ':' : '') + h4(keyAddr(k));
+            return (pre ? ((T && T.seg.tag) || keySeg(k)) + ':' : '') + h4(keyAddr(k));
         }
         // label name -> keys of the name+N offsets into its range
         const offsetKeys = new Map();
@@ -1516,7 +1608,7 @@
         }
 
         // --- prelude
-        if (!xasm && img.multi) dir('opt h-');
+        if (!xasm && img.multi && !img.banked) dir('opt h-');
         for (const pl of img.prelude) {
             if (pl.xasmOnly && !xasm) continue;
             dir(pl.text, pl.comment);
@@ -1527,6 +1619,18 @@
         for (const T of S) {
             const seg = T.seg;
             if (seg.reloc) continue;   // emitted inside its parent
+            if (img.banked) {
+                // cartridge: opt h- is on, so each bank is just an org
+                lines.push({
+                    k: 'seg', s: seg.index, a: seg.start, n: 0,
+                    p: [['note', `${IND};------------------------- Bank ${seg.bank}: $${h4(seg.start)}-$${h4(seg.end)}` +
+                        (img.boot.has(seg.index) ? ' (visible at power-on)' : '')]],
+                    c: '',
+                });
+                dir(`org $${h4(seg.start)}`);
+                segmentBody(T);
+                continue;
+            }
             const contiguous = seg.start === prevEnd + 1;
             prevEnd = seg.end;
             if (img.multi) {
@@ -1936,7 +2040,8 @@
     }
 
     return {
-        OPS, h2, h4, hx, key, keySeg, keyAddr, encodeText, LABEL_RE,
+        OPS, h2, h4, hx, key, keySeg, keyAddr, encodeText, LABEL_RE, cartTypesFor,
+        cartTypes: () => Object.keys(CART_TYPES).map(Number).map((t) => ({ type: t, name: CART_TYPES[t][0], kb: CART_SIZES[t] })),
         detectType, loadImage, analyze, render, asmText, lineText,
         parseDop, exportDop, dedupeImported, parseDirectiveLine, directiveString, specString,
         defaultOptions, newProject, allDirectives, serializeProject, deserializeProject,

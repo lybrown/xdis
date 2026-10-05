@@ -173,7 +173,7 @@ main {
     cursor: default;
 }
 .row > span { flex: none; overflow: hidden; }
-.row .ad { width: 8ch; color: var(--addr); padding-left: 1ch; }
+.row .ad { width: 11ch; color: var(--addr); padding-left: 1ch; }
 .row .ad .sg { color: var(--bytes); }
 .row .by { width: 10ch; color: var(--bytes); }
 .row .src { width: var(--srcw, 40ch); text-overflow: ellipsis; }

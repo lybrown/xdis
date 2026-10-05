@@ -468,6 +468,31 @@ function check(name, ok, detail) {
         log('skip', 'relocation: ' + PROJ + ' not found');
     }
 
+    // 12b. banked cartridge: a raw XEGS 32 KB dump staged by roundtrip.js
+    if ((await fetch('out/cart-raw-xegs.bin', { method: 'HEAD' })).ok) {
+        frame.src = '../index.html?bin=test/out/cart-raw-xegs.bin&type=cart&cart=12';
+        await new Promise((r) => frame.onload = r);
+        const w4 = frame.contentWindow, d4 = w4.document;
+        for (let i = 0; i < 100 && !(w4.xdis && w4.xdis.listing); i++) await sleep(50);
+        const S4 = w4.xdis;
+        check('cartridge loads as 4 banks', S4.img.banked && S4.img.segments.length === 4 && S4.img.cartName === 'XEGS 32 KB');
+        d4.querySelector('[data-tab=project]').click();
+        check('banks table with power-on mark', /Banks/.test(d4.getElementById('tab-project').textContent) &&
+            /b3 ⏻/.test(d4.getElementById('tab-project').textContent));
+        w4.dispatchEvent(new w4.KeyboardEvent('keydown', { key: 'g' }));
+        for (let i = 0; i < 100 && !d4.getElementById('dlg').open; i++) await sleep(10);
+        const gi = d4.getElementById('dlg-input');
+        gi.value = 'b2:8000';
+        gi.dispatchEvent(new w4.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        await sleep(30);
+        const gl = S4.listing.lines[S4.cur];
+        check('goto b2:8000', gl.s === 3 && gl.a === 0x8000, gl.s + ':' + w4.XDis.h4(gl.a));
+        check('bank prefix in address column', Array.from(d4.querySelectorAll('.row .ad .sg')).some((x) => x.textContent === 'b2:'));
+        check('cart header traced from the boot bank', S4.listing.lines.some((l) => l.s === 4 && l.a === 0xA000 && l.k === 'ins'));
+    } else {
+        log('skip', 'cartridge: run roundtrip.js first');
+    }
+
     // 13. self-modifying jmp in the bomb jack example: a low byte written
     // into the jmp operand
     const BJ = 'examples/bomb-jack-v1.5.xdis.json';

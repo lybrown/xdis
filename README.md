@@ -23,9 +23,27 @@ Loading
 -------
 
 * **Binaries**: raw memory images (.bin/.rom/.mem, with a load address), Atari
-  XEX/COM (segments, RUN and INIT vectors, corrupted/truncated files), Atari SAP
-  and Commodore 64 PRG (BASIC `SYS` entry point detection). Use *Open binary…*
+  XEX/COM (segments, RUN and INIT vectors, corrupted/truncated files), Atari SAP,
+  Commodore 64 PRG (BASIC `SYS` entry point detection) and Atari cartridges
+  (`.car` files, or raw dumps with a chosen cartridge type). Use *Open binary…*
   or drag and drop.
+
+Cartridges
+----------
+
+Each bank of a cartridge becomes its own segment at its window address, named
+`b0`, `b1`, …. Labels are `b5_lA123` where an address is in more than one bank.
+Directives and go-to accept `b5:$A123`. The banks visible at power-on are
+analyzed last, so the cartridge header (`CARTCS`, `CARTAD`) and directives
+without a bank refer to them. The output is the image itself: `opt h-`, the
+`.car` header, then an `org` per bank.
+
+Supported types (atari800 numbering): standard 2/4/8/16 KB, Williams (8, 22,
+76), XEGS and switchable XEGS (12–14, 23–25, 33–38, 67), Atarimax (41, 42, 75),
+SIC! (54–56) and MegaCart (26–32, 64). Other types are shown as 8 KB banks at
+`$A000`. Bank switching isn't followed yet: within a bank and from fixed banks,
+references resolve, but a jump into a switched window resolves to the bank
+visible at power-on (or, from inside a bank, to that bank).
 * **Projects** (`.xdis.json`): directives, options, symbol sets and, optionally,
   the binary itself.
 * **dis option files** (`.dop`): *Import .dop…* merges directives and options.

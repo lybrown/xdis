@@ -8,6 +8,16 @@
     const $ = (id) => document.getElementById(id);
     const LH = 18;
     const MNEMONICS = new Set(X.OPS.map((o) => o.mn).concat(['a', 'x', 'y']));
+    const FORMATS = {
+        raw: 'Raw memory image', xex: 'Atari XEX / COM', prg: 'Commodore 64 PRG', sap: 'Atari SAP',
+        car: 'Atari cartridge (.car)', cart: 'Atari cartridge (raw dump)',
+    };
+    // <option>s for raw cartridge dumps: types that match the size first
+    const cartOptions = (size, sel) => {
+        const fit = new Set(X.cartTypesFor(size).map((c) => c.type));
+        return X.cartTypes().sort((a, b) => fit.has(b.type) - fit.has(a.type) || a.kb - b.kb || a.type - b.type)
+            .map((c) => `<option value="${c.type}" ${c.type === sel ? 'selected' : ''}>${esc(c.name)}${fit.has(c.type) ? '' : ' (size differs)'}</option>`).join('');
+    };
 
     const S = {
         project: X.newProject(),
@@ -53,7 +63,7 @@
         const t0 = performance.now();
         if (opt.reload || !S.img) {
             try {
-                S.img = X.loadImage(S.bytes, p.binary.type, p.binary.org);
+                S.img = X.loadImage(S.bytes, p.binary.type, p.binary.org, p.binary.cartType);
             } catch (e) {
                 setStatus(`${e.message}; loading as raw`, true);
                 p.binary.type = 'raw';
@@ -181,7 +191,7 @@
         if (!S.img || !S.img.multi || !s) return '';
         const T = S.model.S[s - 1];
         if (T && T.seg.reloc && S.model.cover[a] <= 1) return '';
-        return s + ':';
+        return ((T && T.seg.tag) || s) + ':';
     }
 
     function curLine() {
@@ -304,7 +314,8 @@
         const sub = cur ? subAddr() : null;
         if (ln.a >= 0 && ln.k !== 'seg' && ln.k !== 'dir') {
             const multi = S.img.multi && ln.s && S.model.cover[ln.a] > 1;
-            ad = (multi ? `<span class="sg">${ln.s}:</span>` : '') + X.h4(sub !== null ? sub : ln.a);
+            const tg = ln.s && S.model.S[ln.s - 1] && S.model.S[ln.s - 1].seg.tag;
+            ad = (multi ? `<span class="sg">${tg || ln.s}:</span>` : '') + X.h4(sub !== null ? sub : ln.a);
             const T = ln.s && S.model.S[ln.s - 1];
             if (T && T.seg.reloc) ad = `<span title="relocated: loaded at $${X.h4(T.seg.load + (sub !== null ? sub : ln.a) - T.seg.start)}">${ad}</span>`;
             by = ln.s ? bytesOf(ln, sub) : '';
@@ -512,9 +523,9 @@
         if (S.undo.length > 500) S.undo.shift();
         S.redo = [];
         const b = S.project.binary;
-        const before = b && b.type + ':' + b.org;
+        const before = b && b.type + ':' + b.org + ':' + b.cartType;
         change(S.project);
-        const after = b && S.project.binary && S.project.binary.type + ':' + S.project.binary.org;
+        const after = b && S.project.binary && S.project.binary.type + ':' + S.project.binary.org + ':' + S.project.binary.cartType;
         rebuild({ reload: before !== after });
         if (msg) setStatus(msg);
     }
@@ -898,7 +909,7 @@
     function parseTarget(text) {
         text = text.trim();
         if (!text) return null;
-        const m = /^(?:(\d+):)?\$?([0-9a-fA-F]{1,4})$/.exec(text);
+        const m = /^(?:(b?\d+):)?\$?([0-9a-fA-F]{1,4})$/i.exec(text);
         const named = S.model.names.get(text);
         if (named !== undefined) return named;
         for (const [name, k] of S.model.names) if (name.toLowerCase() === text.toLowerCase()) return k;
@@ -907,7 +918,7 @@
         }
         if (m) {
             const a = parseInt(m[2], 16);
-            const s = m[1] ? +m[1] : S.model.finalOwner[a];
+            const s = !m[1] ? S.model.finalOwner[a] : /^b/i.test(m[1]) ? +m[1].slice(1) + 1 : +m[1];
             return X.key(s, a);
         }
         for (const ln of S.listing.lines) {
@@ -1203,7 +1214,7 @@
             h += `<div class="kv"><span>Bytes</span><span class="mono">${Array.from(T.seg.data.subarray(off, off + Math.min(n, 16)), X.h2).join(' ')}${n > 16 ? ' …' : ''}</span>
                 <span>Segment</span><span class="mono">${T.seg.reloc
                     ? `relocated block (from ${T.seg.parent})`
-                    : `${T.seg.index} ($${X.h4(T.seg.start)}–$${X.h4(T.seg.end)})`}</span>
+                    : `${T.seg.bank !== undefined ? 'bank ' + T.seg.bank : T.seg.index} ($${X.h4(T.seg.start)}–$${X.h4(T.seg.end)})`}</span>
                 ${T.seg.reloc ? `<span>Loaded at</span><span class="mono">$${X.h4(T.seg.load + a - T.seg.start)}
                     <button class="small" data-act="relocate" title="Remove this relocation">Remove relocation</button></span>` : ''}</div>`;
         }
@@ -1460,17 +1471,19 @@
         if (b) {
             h += `<div class="kv"><span>File</span><span class="mono">${esc(b.name)}</span><span>Size</span><span>${b.size} bytes</span></div>
                 <div class="opts">
-                <div class="num"><span>Format</span><select id="opt-type">${['raw', 'xex', 'prg', 'sap'].map((t) =>
-                    `<option value="${t}" ${b.type === t ? 'selected' : ''}>${{ raw: 'Raw memory', xex: 'Atari XEX', prg: 'C64 PRG', sap: 'Atari SAP' }[t]}</option>`).join('')}</select></div>
+                <div class="num"><span>Format</span><select id="opt-type">${Object.keys(FORMATS).map((t) =>
+                    `<option value="${t}" ${b.type === t ? 'selected' : ''}>${FORMATS[t]}</option>`).join('')}</select></div>
                 ${b.type === 'raw' ? `<div class="num"><span>Load address</span><input type="text" id="opt-org" value="$${X.h4(b.org || 0)}" spellcheck="false"></div>` : ''}
+                ${b.type === 'cart' ? `<div class="num"><span>Cartridge type</span><select id="opt-cart">${cartOptions(b.size, b.cartType)}</select></div>` : ''}
+                ${S.img && S.img.banked ? `<div class="kv"><span>Cartridge</span><span>${esc(S.img.cartName)} (type ${S.img.cartType})</span></div>` : ''}
                 </div>`;
             if (!S.bytes) h += '<p class="problem">Binary not loaded — open it to continue.</p>';
         } else {
             h += '<p class="dim">No binary loaded.</p>';
         }
         if (S.img && S.img.segments.length > 1) {
-            h += '<h3>Segments</h3><table class="seg-table"><tr><th>#</th><th>Start</th><th>End</th><th>Size</th><th></th></tr>' +
-                S.img.segments.map((s) => `<tr class="click" data-goto="${X.key(s.index, s.start)}"><td>${s.index}</td><td>${X.h4(s.start)}</td><td>${X.h4(s.end)}</td><td>${s.data.length}</td><td class="dim">${s.kind || (s.ini !== undefined ? 'ini' : '')}${s.run !== undefined && s.kind !== 'run' ? ' run' : ''}</td></tr>` +
+            h += `<h3>${S.img.banked ? 'Banks <span class="dim">(⏻ visible at power-on)</span>' : 'Segments'}</h3><table class="seg-table"><tr><th>#</th><th>Start</th><th>End</th><th>Size</th><th></th></tr>` +
+                S.img.segments.map((s) => `<tr class="click" data-goto="${X.key(s.index, s.start)}"><td>${s.tag || s.index}${S.img.boot && S.img.boot.has(s.index) ? ' ⏻' : ''}</td><td>${X.h4(s.start)}</td><td>${X.h4(s.end)}</td><td>${s.data.length}</td><td class="dim">${s.kind || (s.ini !== undefined ? 'ini' : '')}${s.run !== undefined && s.kind !== 'run' ? ' run' : ''}</td></tr>` +
                     (S.model ? S.model.pieces.filter((p) => p.parent === s.index).map((p) =>
                         `<tr class="click reloc" data-goto="${X.key(p.index, p.start)}" title="loaded at $${X.h4(p.load)}–$${X.h4(p.load + p.data.length - 1)}"><td>↳</td><td>${X.h4(p.start)}</td><td>${X.h4(p.end)}</td><td>${p.data.length}</td><td class="dim">org r: from ${X.h4(p.load)}</td></tr>`).join('') : '')).join('') + '</table>';
         }
@@ -1849,24 +1862,30 @@
         const prev = pending ? S.project.binary : null;
         let type = prev ? prev.type : X.detectType(file.name, bytes);
         let org = prev ? prev.org || 0 : guessOrg(bytes.length);
+        let cartType = prev ? prev.cartType : (X.cartTypesFor(bytes.length)[0] || {}).type;
         const hasWork = !pending && S.project.directives.length > 0;
-        const suggest = type === 'prg' ? 'Commodore 64' : type === 'xex' || type === 'sap' ? 'Atari 8-bit' : '';
+        const suggest = type === 'prg' ? 'Commodore 64' : ['xex', 'sap', 'car', 'cart'].includes(type) ? 'Atari 8-bit' : '';
         const body = `<div class="kv"><span>File</span><span class="mono">${esc(file.name)}</span><span>Size</span><span>${bytes.length} bytes</span></div>
-            <div class="field"><label>Format</label><select id="ld-type">${['raw', 'xex', 'prg', 'sap'].map((t) =>
-                `<option value="${t}" ${t === type ? 'selected' : ''}>${{ raw: 'Raw memory image', xex: 'Atari XEX / COM', prg: 'Commodore 64 PRG', sap: 'Atari SAP' }[t]}</option>`).join('')}</select></div>
+            <div class="field"><label>Format</label><select id="ld-type">${Object.keys(FORMATS).map((t) =>
+                `<option value="${t}" ${t === type ? 'selected' : ''}>${FORMATS[t]}</option>`).join('')}</select></div>
             <div class="field" id="ld-org-f"><label>Load address (hex) for raw images</label><input type="text" id="ld-org" value="$${X.h4(org)}"></div>
+            <div class="field" id="ld-cart-f"><label>Cartridge type</label><select id="ld-cart">${cartOptions(bytes.length, cartType)}</select></div>
             ${!pending ? `<div class="field"><label>Symbol sets</label>${Object.keys(SYM.groups).map((g) =>
                 `<label><input type="checkbox" data-group="${esc(g)}" ${g === suggest ? 'checked' : ''}> ${esc(g)} (${SYM.groups[g].join(', ')})</label>`).join('<br>')}</div>` : ''}
             ${hasWork ? '<div class="field"><label><input type="checkbox" id="ld-keep"> Keep the current directives (same program, new build)</label></div>' : ''}`;
         let groups = [], keep = false;
         const btn = await dialog(pending ? `Open ${prev.name}` : 'Open binary', body,
             [{ label: 'Cancel', value: 'cancel' }, { label: 'Open', value: 'ok', primary: true }], (dlg) => {
-                const sync = () => { $('ld-org-f').hidden = $('ld-type').value !== 'raw'; };
+                const sync = () => {
+                    $('ld-org-f').hidden = $('ld-type').value !== 'raw';
+                    $('ld-cart-f').hidden = $('ld-type').value !== 'cart';
+                };
                 $('ld-type').addEventListener('change', sync);
                 sync();
                 dlg.querySelector('button[value=ok]').addEventListener('click', () => {
                     type = $('ld-type').value;
                     org = parseInt($('ld-org').value.replace(/^\$|^0x/i, ''), 16) || 0;
+                    cartType = +$('ld-cart').value;
                     groups = Array.from(dlg.querySelectorAll('[data-group]:checked'), (c) => c.dataset.group);
                     keep = !!($('ld-keep') && $('ld-keep').checked);
                 });
@@ -1885,6 +1904,7 @@
         }
         sortIncludes(S.project);
         S.project.binary = { name: file.name, type, org: org & 0xFFFF, size: bytes.length };
+        if (type === 'cart') S.project.binary.cartType = cartType;
         S.bytes = bytes;
         S.back = [];
         S.fwd = [];
@@ -2184,7 +2204,13 @@
                 return commit((p) => { p.options = Object.assign({}, p.options, { [t.dataset.num]: v }); });
             }
             if (t.id === 'opt-syntax') return commit((p) => { p.options = Object.assign({}, p.options, { syntax: t.value }); }, `Output syntax: ${t.value}`);
-            if (t.id === 'opt-type') return commit((p) => { p.binary = Object.assign({}, p.binary, { type: t.value }); }, `Format: ${t.value}`);
+            if (t.id === 'opt-type') {
+                return commit((p) => {
+                    p.binary = Object.assign({}, p.binary, { type: t.value });
+                    if (t.value === 'cart' && !p.binary.cartType) p.binary.cartType = (X.cartTypesFor(p.binary.size)[0] || { type: 1 }).type;
+                }, `Format: ${FORMATS[t.value]}`);
+            }
+            if (t.id === 'opt-cart') return commit((p) => { p.binary = Object.assign({}, p.binary, { cartType: +t.value }); }, 'Cartridge type changed');
             if (t.id === 'opt-org') {
                 const v = parseInt(t.value.replace(/^\$|^0x/i, ''), 16);
                 if (isNaN(v) || v < 0 || v > 0xFFFF) return setStatus('Bad load address', true);
@@ -2352,6 +2378,7 @@
                     type: q.get('type') || (S.project.binary && S.project.binary.type) || X.detectType(name, bytes),
                     org: q.get('org') ? parseInt(q.get('org'), 16) : (S.project.binary && S.project.binary.org) || 0,
                 });
+                if (q.get('cart')) S.project.binary.cartType = +q.get('cart');
                 S.bytes = bytes;
             }
             for (const url of (q.get('dop') || '').split(',').filter(Boolean)) {
