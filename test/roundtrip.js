@@ -88,7 +88,10 @@ const cases = [
       expect: ['#>l7ED5', '#<l7ED5'] },
     // page registers: with pmdata labeled, PMBASE's #$43 becomes #>pmdata
     { name: 'galaxian-pages', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true, pointers: true,
-      directives: ['data pmdata=$4300'], expect: ['lda #>pmdata', 'pmdata equ $4300', 'lda #>l3A00'] },
+      directives: ['data pmdata=$4300', 'data dlist2=$3D00+50'],
+      expect: ['lda #>pmdata', 'pmdata equ $4300', 'lda #>l3A00',
+          // an equate's comment includes accesses to offsets into its range
+          'dlist2 equ $3D00\t\t; Access: A09C A101 A104'] },
     // labels in operand overrides get their equates
     { name: 'override-refs', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json',
       directives: ['data pmdata=$4300', 'operand 5:$4800 #>pmdata', 'lo 5:$4801 $1243'],

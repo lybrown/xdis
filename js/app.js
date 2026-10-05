@@ -341,7 +341,7 @@
 
     // The Access/Callers comment with each referencing address as a link.
     function xrefHtml(ln) {
-        const r = S.model.refs.get(lineKey(ln));
+        const r = ln.k === 'equ' ? S.listing.refsFor(lineKey(ln)) : S.model.refs.get(lineKey(ln));
         if (!r) return esc(ln.x);
         const keys = new Map();
         for (const k of r.access.concat(r.callers)) {
@@ -797,11 +797,21 @@
     // Navigation
 
     function goKey(k, push) {
-        const i = lineForKey(k, 'label');
+        let i = lineForKey(k, 'label');
+        let msg = '';
+        if (i < 0) {
+            // an offset into a range label (dlist2+$3A) goes to the label
+            const l = S.model.labelAt(k);
+            if (l && l.off && l.baseKey !== undefined) {
+                i = lineForKey(l.baseKey, 'label');
+                if (i >= 0) msg = `${l.name} is not loaded — showing ${l.base}`;
+            }
+        }
         if (i < 0) {
             setStatus(`${hexAddr(X.keyAddr(k))} is not in loaded memory`, true);
             return false;
         }
+        if (msg) setStatus(msg);
         if (push !== false) {
             S.back.push(viewAnchor());
             if (S.back.length > 200) S.back.shift();
@@ -1133,7 +1143,7 @@
         const l = S.model.labelAt(k);
         const [kc, kn] = kindOf(ln);
         const T = S.model.S[ln.s - 1];
-        const r = S.model.refs.get(k) || { callers: [], access: [] };
+        const r = (ln.k === 'equ' ? S.listing.refsFor(k) : S.model.refs.get(k)) || { callers: [], access: [] };
         const userName = l && l.user && !l.off ? l.name : '';
         const comment = S.model.comments.get(k) || '';
         const note = S.model.notes.get(k) || '';

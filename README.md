@@ -165,6 +165,8 @@ test file. Where xdis intentionally differs:
 * Pointer tables and vectors are shown as `dta a(label)`.
 * A plain label inside a data range overrides the range's `name+N` instead of
   being dropped as a duplicate.
+* An equate's `Access:` and `Callers:` comment includes references to every
+  `name+N` offset into its range, not just to `name` itself.
 * Automatic labels only get an `sN` segment prefix when an address is loaded by
   more than one segment.
 * Contiguous or truncated XEX segments keep their original headers (xasm

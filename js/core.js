@@ -1125,8 +1125,31 @@
             const pre = segPrefix && !(T && T.seg.reloc && model.cover[keyAddr(k)] <= 1);
             return (pre ? keySeg(k) + ':' : '') + h4(keyAddr(k));
         }
-        function xrefs(k, which) {
+        // label name -> keys of the name+N offsets into its range
+        const offsetKeys = new Map();
+        for (const [k, l] of model.labels) {
+            if (!l.off) continue;
+            if (!offsetKeys.has(l.base)) offsetKeys.set(l.base, []);
+            offsetKeys.get(l.base).push(k);
+        }
+        // References to a label, including those to offsets into its range.
+        function refsFor(k) {
             const r = refs.get(k);
+            const l = model.labelAt(k);
+            const extra = l && !l.off ? offsetKeys.get(l.name) : null;
+            if (!extra) return r;
+            const m = { callers: r ? r.callers.slice() : [], access: r ? r.access.slice() : [] };
+            for (const ok of extra) {
+                const o = refs.get(ok);
+                if (o) {
+                    m.callers.push(...o.callers);
+                    m.access.push(...o.access);
+                }
+            }
+            return m.callers.length || m.access.length ? m : null;
+        }
+        function xrefs(k, which, range) {
+            const r = range ? refsFor(k) : refs.get(k);
             if (!r) return '';
             const out = [];
             if (which !== 'callers' && opts.access && r.access.length) {
@@ -1478,7 +1501,7 @@
                 head.push({
                     k: 'equ', s: keySeg(k), a, n: 0, def: k,
                     p: [['lbl', name, k], ['dir', ' equ '], ['num', '$' + hx(a)]],
-                    c: '', x: xrefs(k), u: comments.get(k),
+                    c: '', x: xrefs(k, undefined, true), u: comments.get(k),
                 });
             }
         }
@@ -1503,7 +1526,7 @@
             for (let m = 0; m < ln.n; m++) lineOf[ln.s - 1][ln.a - T.seg.start + m] = i;
         });
 
-        return { lines: all, lineOf, firstLine, problems, defined, used, refName };
+        return { lines: all, lineOf, firstLine, problems, defined, used, refName, refsFor };
     }
 
     // One line of assembly source, according to the comment options.
