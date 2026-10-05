@@ -453,7 +453,7 @@
             illegal: false,
             rangelabels: false,
             syntax: 'xasm',        // 'xasm' (org f:, run, ini, a:) or 'mads' (explicit headers, .a)
-            dataPerLine: 8,
+            dataPerLine: 16,
             textPerLine: 32,
             fillMin: 32,           // collapse runs of identical bytes into :N dta; 0 = off
         };
@@ -718,6 +718,11 @@
             return t;
         }
 
+        // Where each directive-made caller ("-P 3C64_3C62", "-v FFFA", ...)
+        // comes from: address keys to go to, or the code directive's address.
+        const pseudoRefs = new Map();
+        const pseudo = (str, v) => { if (!pseudoRefs.has(str)) pseudoRefs.set(str, v); return str; };
+
         function enter(dirs) {
             for (const d of dirs) {
                 if (d.type !== 'address' && d.type !== 'codeptr') continue;
@@ -727,11 +732,13 @@
                     const hi = split ? d.hi + off : lo + 1;
                     if (hi > 0xFFFF) break;
                     const t = pointer(lo, hi, d);
-                    if (t >= 0 && d.type === 'codeptr') trace(t, `-P ${h4(hi)}_${h4(lo)}`);
+                    if (t >= 0 && d.type === 'codeptr') {
+                        trace(t, pseudo(`-P ${h4(hi)}_${h4(lo)}`, { keys: [key(owner[lo], lo), key(owner[hi], hi)] }));
+                    }
                 }
             }
             for (const d of dirs) {
-                if (d.type === 'code') trace(d.addr, `-c ${h4(d.addr)}`);
+                if (d.type === 'code') trace(d.addr, pseudo(`-c ${h4(d.addr)}`, { addr: d.addr }));
             }
             for (const d of dirs) {
                 if (d.type !== 'vector') continue;
@@ -739,7 +746,7 @@
                     const lo = d.addr + off;
                     if (lo + 1 > 0xFFFF) break;
                     const t = pointer(lo, lo + 1, d);
-                    if (t >= 0) trace(t, `-v ${h4(lo)}`);
+                    if (t >= 0) trace(t, pseudo(`-v ${h4(lo)}`, { keys: [key(owner[lo], lo)] }));
                 }
             }
         }
@@ -769,15 +776,15 @@
             if (s.run !== undefined) run = s;
             if (s.ini !== undefined) {
                 pointer(0x2E2, 0x2E3, { type: 'ini', addr: 0x2E2, range: 0 });
-                trace(s.ini, `ini_segment${s.index}`);
+                trace(s.ini, pseudo(`ini_segment${s.index}`, { keys: [key(owner[0x2E2], 0x2E2)] }));
             }
         }
         visited.fill(0);
         if (run) {
             pointer(0x2E0, 0x2E1, { type: 'run', addr: 0x2E0, range: 0 });
-            trace(run.run, `run_segment${run.index}`);
+            trace(run.run, pseudo(`run_segment${run.index}`, { keys: [key(owner[0x2E0], 0x2E0)] }));
         }
-        if (!traced && img.multi && real.length) trace(real[0].start, 'COM');
+        if (!traced && img.multi && real.length) trace(real[0].start, pseudo('COM', { keys: [key(real[0].index, real[0].start)] }));
         enter(auto.concat(bySeg.get(0) || []));
         for (const d of auto) {
             if (d.name) addLabel(key(finalOwner[d.addr], d.addr), d.name, 0, 0, d);
@@ -1092,7 +1099,7 @@
         return {
             img, opts, S, mem, finalOwner, cover, refs, need, labels, names, consts,
             comments, notes, operands, warnings, labelAt, isCodeStart, segOf,
-            pieces: R.pieces, holesOf: R.holesOf, loadOwner: R.loadOwner, mapDirective: R.toRun, loadToRun,
+            pieces: R.pieces, holesOf: R.holesOf, loadOwner: R.loadOwner, mapDirective: R.toRun, loadToRun, pseudoRefs,
         };
     }
 

@@ -340,6 +340,30 @@
     }
 
     // The Access/Callers comment with each referencing address as a link.
+    // Where a directive-made caller leads: {k} to go to (for "-P", the
+    // earlier of the two instructions), {dir} for a code directive, or null.
+    function pseudoTarget(str) {
+        const v = S.model.pseudoRefs.get(str);
+        if (!v) return null;
+        if (v.addr !== undefined) return { dir: v.addr };
+        let best = null, bestLine = Infinity;
+        for (const k of v.keys) {
+            const i = lineForKey(k, 'ins');
+            if (i >= 0 && i < bestLine) { best = k; bestLine = i; }
+        }
+        return best === null ? null : { k: best };
+    }
+
+    function pseudoLink(str, tag) {
+        const t = pseudoTarget(str);
+        if (!t) return esc(str);
+        if (t.dir !== undefined) {
+            return `<${tag} class="xl" data-xdir="${t.dir}" title="Show the code directive for $${X.h4(t.dir)}">${esc(str)}</${tag}>`;
+        }
+        return `<${tag} class="xl" data-xk="${t.k}" title="Go to ${hexAddr(X.keyAddr(t.k))}">${esc(str)}</${tag}>`;
+    }
+
+    // The Access/Callers comment with each reference as a link.
     function xrefHtml(ln) {
         const r = ln.k === 'equ' ? S.listing.refsFor(lineKey(ln)) : S.model.refs.get(lineKey(ln));
         if (!r) return esc(ln.x);
@@ -347,10 +371,34 @@
         for (const k of r.access.concat(r.callers)) {
             if (typeof k === 'number') keys.set(S.listing.refName(k), k);
         }
-        return ln.x.split(' ').map((w) => {
+        const words = ln.x.split(' ');
+        const out = [];
+        for (let i = 0; i < words.length; i++) {
+            const w = words[i];
+            if ((w === '-P' || w === '-v' || w === '-c') && i + 1 < words.length) {
+                out.push(pseudoLink(w + ' ' + words[++i], 'span'));
+                continue;
+            }
+            if (/^(ini_segment|run_segment)\d+$|^COM$/.test(w)) {
+                out.push(pseudoLink(w, 'span'));
+                continue;
+            }
             const k = keys.get(w);
-            return k === undefined ? esc(w) : `<span class="xl" data-xk="${k}" title="Go to ${hexAddr(X.keyAddr(k))}">${esc(w)}</span>`;
-        }).join(' ');
+            out.push(k === undefined ? esc(w) : `<span class="xl" data-xk="${k}" title="Go to ${hexAddr(X.keyAddr(k))}">${esc(w)}</span>`);
+        }
+        return out.join(' ');
+    }
+
+    // Show the code directive(s) at an address in the Directives panel.
+    function showCodeDirective(addr) {
+        const here = S.project.directives.filter((d) => d.type === 'code' && S.model.mapDirective(d).addr === addr);
+        if (!here.length) {
+            return setStatus(`The code entry at $${X.h4(addr)} comes from a symbol set or the file format`);
+        }
+        showTab('directives');
+        $('dir-unneeded').checked = false;
+        $('dir-filter').value = X.directiveString(here[0]);
+        updateDirectives();
     }
 
     function ensureVisible(i, center) {
@@ -1092,7 +1140,7 @@
             if (seen.has(id)) continue;
             seen.add(id);
             if (typeof r === 'string') {
-                out.push([r, `<a class="dim" title="entry point from directives">${esc(r)}</a>`]);
+                out.push([r, pseudoTarget(r) ? pseudoLink(r, 'a') : `<a class="dim" title="entry point from directives">${esc(r)}</a>`]);
             } else {
                 const l = S.model.labelAt(r);
                 const nm = l && !l.off ? l.name : (S.img.multi ? X.keySeg(r) + ':' : '') + X.h4(X.keyAddr(r));
@@ -1982,6 +2030,13 @@
                 goKey(+xl.dataset.xk);
                 return;
             }
+            const xd = e.target.closest('[data-xdir]');
+            if (xd && e.button === 0) {
+                e.preventDefault();
+                moveTo(i);
+                showCodeDirective(+xd.dataset.xdir);
+                return;
+            }
             const byte = e.target.closest('[data-a]');
             const pick = byte && !e.shiftKey ? +byte.dataset.a : undefined;
             if (e.button === 2) {
@@ -2096,6 +2151,10 @@
             }
             const actBtn = e.target.closest('[data-act]');
             if (actBtn) return act(actBtn.dataset.act);
+            const xd = e.target.closest('[data-xdir]');
+            if (xd) return showCodeDirective(+xd.dataset.xdir);
+            const xk = e.target.closest('[data-xk]');
+            if (xk) return goKey(+xk.dataset.xk);
             const k = e.target.closest('[data-k]');
             if (k) return goKey(+k.dataset.k);
             const g = e.target.closest('[data-goto]');
