@@ -78,6 +78,9 @@ All of these are also available in the right-click menu and in the
 directives that apply at the cursor. The memory map strip above the listing
 shows code, data, text and pointers; click it to jump.
 
+The *Problems* panel lists load, trace and label warnings. Click one to
+jump to the address it concerns, or to the directive that caused it.
+
 The *Directives* panel lists every directive in dis option syntax. You can
 delete them there, or type new ones (`code start=$2000`, `data tbl=$3000+FF`,
 `codeptr vbiptr=3C64_3C62`).

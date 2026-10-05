@@ -1132,17 +1132,58 @@
     // ------------------------------------------------------------------
     // Problems
 
+    // Problems are strings or {msg, k?, dir?, extra?}; ones with a location
+    // are clickable.
     function updateProblems() {
         const list = [];
         for (const m of S.importProblems) list.push(m);
         if (S.img) list.push(...S.img.warnings);
         if (S.listing) list.push(...S.listing.problems);
-        const uniq = Array.from(new Set(list));
-        $('problem-list').innerHTML = uniq.slice(0, 500).map((m) => `<div class="problem">${esc(m)}</div>`).join('') ||
-            '<div class="more">No problems.</div>';
+        const seen = new Set();
+        const uniq = [];
+        for (const m of list) {
+            const p = typeof m === 'string' ? { msg: m } : m;
+            if (seen.has(p.msg)) continue;
+            seen.add(p.msg);
+            uniq.push(p);
+        }
+        S.problems = uniq;
+        $('problem-list').innerHTML = uniq.slice(0, 500).map((p, i) => {
+            const where = p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
+                p.extra ? 'Go to the corrupted data' : '';
+            return `<div class="problem${where ? ' link' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${esc(p.msg)}</div>`;
+        }).join('') || '<div class="more">No problems.</div>';
         const c = $('problem-count');
         c.hidden = !uniq.length;
         c.textContent = uniq.length;
+    }
+
+    function gotoProblem(p) {
+        if (!p) return;
+        if (p.k !== undefined && S.model && lineForKey(p.k, 'label') >= 0) {
+            goKey(p.k);
+            $('listing').focus({ preventScroll: true });
+            return;
+        }
+        if (p.extra && S.listing) {
+            const i = S.listing.lines.findIndex((ln) => ln.k === 'dir' && /Corrupted segment/.test(ln.p[0][1]));
+            if (i >= 0) {
+                S.back.push(viewAnchor());
+                moveTo(i, false, true);
+                flash(i);
+                $('listing').focus({ preventScroll: true });
+                return;
+            }
+        }
+        if (p.dir) {
+            // show the directive that caused it
+            showTab('directives');
+            $('dir-filter').value = p.dir;
+            updateDirectives();
+            setStatus(`Showing ${p.dir}`);
+            return;
+        }
+        if (p.k !== undefined) setStatus(`${hexAddr(X.keyAddr(p.k))} is not in loaded memory`, true);
     }
 
     function updateFileInfo() {
@@ -1617,6 +1658,8 @@
         // side panel links (labels, xrefs, directives, segments)
         document.querySelector('.side').addEventListener('click', (e) => {
             if (e.target.classList.contains('dir-edit')) return;
+            const prob = e.target.closest('[data-prob]');
+            if (prob) return gotoProblem(S.problems[+prob.dataset.prob]);
             const ed = e.target.closest('[data-edit]');
             if (ed) return editDirective(ed.closest('.item'), +ed.dataset.edit);
             const del = e.target.closest('[data-del]');

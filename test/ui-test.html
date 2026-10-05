@@ -230,6 +230,34 @@ function check(name, ok, detail) {
         check('Esc returns from xref jump', S.cur === xi);
     }
 
+    // 9f. clicking a problem goes to where it applies
+    const addDir = async (text) => {
+        const inp = doc.getElementById('dir-add');
+        inp.value = text;
+        inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        await sleep(20);
+    };
+    const firstCode = S.listing.lines.filter((l) => l.k === 'ins');
+    const [c1, c2] = [firstCode[3], firstCode[40]];
+    await addDir(`label dupname=${S.img.multi && S.model.cover[c1.a] > 1 ? c1.s + ':' : ''}$${X.h4(c1.a)}`);
+    await addDir(`label dupname=${S.img.multi && S.model.cover[c2.a] > 1 ? c2.s + ':' : ''}$${X.h4(c2.a)}`);
+    await addDir('code 99:$2000');
+    doc.querySelector('[data-tab=problems]').click();
+    const probs = Array.from(doc.querySelectorAll('#problem-list .problem'));
+    const dupP = probs.find((p) => /dupname is defined at both/.test(p.textContent));
+    const segP = probs.find((p) => /no segment 99/.test(p.textContent));
+    check('duplicate label problem is clickable', dupP && dupP.classList.contains('link'), dupP && dupP.textContent);
+    dupP.click();
+    check('problem click jumps to the address', S.listing.lines[S.cur].a === c2.a, X.h4(S.listing.lines[S.cur].a));
+    check('bad directive problem is clickable', segP && segP.classList.contains('link'));
+    segP.click();
+    check('directive problem shows the directive', !doc.getElementById('tab-directives').hidden &&
+        doc.getElementById('dir-filter').value === 'code 99:$2000' && doc.querySelectorAll('#dir-list .item').length === 1);
+    for (let n = 0; n < 3; n++) key('z', { ctrlKey: true });
+    doc.getElementById('dir-filter').value = '';
+    doc.querySelector('[data-tab=inspect]').click();
+    check('undo removes the test directives', !S.project.directives.some((d) => d.name === 'dupname' || d.seg === 99));
+
     // 10. context menu offers the actions
     const row = doc.querySelector('.row.cur');
     row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));

@@ -267,6 +267,8 @@ body.dragging .empty .drop, body.dragging #listing { outline: 3px dashed var(--a
 .list .more { color: var(--dim); padding: 4px; }
 .label-kinds { display: flex; gap: 10px; font-size: 12px; color: var(--dim); }
 .problem { padding: 4px 6px; border-left: 3px solid var(--warn); margin-bottom: 4px; background: var(--bg); font-size: 12px; }
+.problem.link { cursor: pointer; }
+.problem.link:hover { background: var(--panel2); border-left-color: var(--accent); }
 
 /* inspector */
 .ins-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }

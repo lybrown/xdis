@@ -96,7 +96,7 @@
 
     function addSegment(img, start, data, extra) {
         if (start + data.length > MEM) {
-            img.warnings.push(`Segment at $${h4(start)} runs past $FFFF; truncated`);
+            img.warnings.push({ msg: `Segment at $${h4(start)} runs past $FFFF; truncated`, k: key(img.segments.length + 1, start) });
             data = data.subarray(0, MEM - start);
         }
         const seg = Object.assign({
@@ -131,20 +131,22 @@
                 }
             }
             if (start < 0 || end < 0) {
-                img.warnings.push(`Incomplete segment header at byte ${segstart}`);
+                img.warnings.push({ msg: `Incomplete segment header at byte ${segstart}`, extra: true });
                 img.extra = bytes.subarray(segstart);
                 break;
             }
             const len = end - start + 1;
             if (len < 0) {
-                img.warnings.push(`Segment length is negative at byte ${segstart}: ${len}`);
+                img.warnings.push({ msg: `Segment length is negative at byte ${segstart}: ${len}`, extra: true });
                 img.extra = bytes.subarray(segstart);
                 break;
             }
-            if (i + len > n) img.warnings.push(`Segment past EOF at byte ${segstart}`);
             const data = bytes.subarray(i, i + len);
             i += len;
             const seg = addSegment(img, start, data, { ffff, hdrEnd: end, offset: segstart });
+            if (data.length < len) {
+                img.warnings.push({ msg: `Segment ${seg.index} past EOF at byte ${segstart}`, k: key(seg.index, start) });
+            }
             if (seg.start <= 0x2E0 && seg.end >= 0x2E1) {
                 seg.run = word(paddedMem(seg), 0x2E0);
             }
@@ -235,6 +237,7 @@
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
+    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1 };
 
     const ALIASES = {
         c: 'code', d: 'data', C: 'constant', v: 'vector', A: 'address',
@@ -449,8 +452,10 @@
             fmt: new Uint8Array(s.data.length),   // FMT.* for user data / pointers
             ptr: new Map(),                       // offset -> {t, ts, part, other}
         }));
+        // Each warning is {msg, k?: address key, dir?: directive text} so the
+        // UI can jump to where it applies.
         const warnings = [];
-        const warn = (msg) => warnings.push(msg);
+        const warn = (msg, k, d) => warnings.push({ msg, k, dir: d && d.type in DIR_KINDS ? directiveString(d) : undefined });
         const resolveSeg = (d, a) => (d.seg && d.seg <= segs.length ? d.seg : d.seg ? -1 : finalOwner[a]);
         const segOf = (k) => S[keySeg(k) - 1];
 
@@ -471,7 +476,7 @@
         }
         for (const d of directives) {
             if (d.seg && d.seg > segs.length) {
-                warn(`${d.type} ${specString(d)}: no segment ${d.seg}`);
+                warn(`${d.type} ${specString(d)}: no segment ${d.seg}`, undefined, d);
                 continue;
             }
             if (d.type === 'constant') {
@@ -488,7 +493,7 @@
             const base = key(resolveSeg(d, d.addr), d.addr);
             for (let off = 0; off <= d.range; off++) {
                 const a = d.addr + off;
-                if (a > 0xFFFF) { warn(`Out of range ${d.type}: ${specString(d)}`); break; }
+                if (a > 0xFFFF) { warn(`Out of range ${d.type}: ${specString(d)}`, undefined, d); break; }
                 addLabel(key(resolveSeg(d, a), a), d.name, off, base, d);
             }
         }
@@ -496,7 +501,7 @@
             if (l.off) continue;
             const prev = names.get(l.name);
             if (prev !== undefined && prev !== k) {
-                warn(`Label ${l.name} is defined at both $${h4(keyAddr(prev))} and $${h4(keyAddr(k))}`);
+                warn(`Label ${l.name} is defined at both $${h4(keyAddr(prev))} and $${h4(keyAddr(k))}`, k, l.dir);
             } else {
                 names.set(l.name, k);
             }
@@ -554,7 +559,7 @@
                     if (T.fmt[off]) break;
                     visited[i] = 1;
                     if (i + op.len > MEM || (op.len > 1 && !owner[i + 1]) || (op.len > 2 && !owner[i + 2])) {
-                        warn(`Instruction goes past end of memory at $${h4(i)}`);
+                        warn(`Instruction goes past end of memory at $${h4(i)}`, key(s, i));
                         break;
                     }
                     T.ilen[off] = op.len;
@@ -582,7 +587,7 @@
                                 addRef(key(owner[dest], dest), 'callers', fromKey);
                                 work.push(dest);
                             } else {
-                                warn(`Indirect JMP references undefined memory at $${h4(i)}`);
+                                warn(`Indirect JMP references undefined memory at $${h4(i)}`, key(s, i));
                             }
                         } else {
                             addRef(tk, 'callers', fromKey);
@@ -606,7 +611,8 @@
             if (!owner[lo] || !owner[hi]) {
                 // Vectors in symbol sets commonly point into ROM that is not loaded.
                 if (d.type === 'vector' && !owner[lo] && !owner[hi]) return -1;
-                warn(`${d.type} ${specString(d)}: pointer at $${h4(lo)} is in undefined memory`);
+                warn(`${d.type} ${specString(d)}: pointer at $${h4(lo)} is in undefined memory`,
+                    key(owner[lo] || owner[hi], owner[lo] ? lo : hi), d);
                 return -1;
             }
             const t = mem[lo] | (mem[hi] << 8);
@@ -763,7 +769,7 @@
             const l = model.labelAt(k);
             if (!l || l.off) return;
             if (defined.has(l.name)) {
-                problems.push(`Label ${l.name} defined more than once`);
+                problems.push({ msg: `Label ${l.name} defined more than once`, k, dir: l.dir ? directiveString(l.dir) : undefined });
             }
             defined.add(l.name);
             if (mid) {
