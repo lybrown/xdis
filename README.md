@@ -38,6 +38,13 @@ analyzed last, so the cartridge header (`CARTCS`, `CARTAD`) and directives
 without a bank refer to them. The output is the image itself: `opt h-`, the
 `.car` header, then an `org` per bank.
 
+The bank registers are labeled for the cartridge type, shown under
+*Directives* as a built-in set. Address-select schemes (Williams, Atarimax)
+get `CARTBANK=$D500+N` and `CARTOFF`, so a bank switch reads `sta CARTBANK+12`
+(offsets in decimal: that's bank 12). Value-select schemes (XEGS, MegaCart,
+SIC!) get `CARTBANK=$D500+FF`, as in `lda #5` / `sta CARTBANK`. Your own
+labels at those addresses take priority.
+
 Supported types (atari800 numbering): standard 2/4/8/16 KB, Williams (8, 22,
 76), XEGS and switchable XEGS (12–14, 23–25, 33–38, 67), Atarimax (41, 42, 75),
 SIC! (54–56) and MegaCart (26–32, 64). Other types are shown as 8 KB banks at

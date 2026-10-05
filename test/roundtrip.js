@@ -46,6 +46,15 @@ if (fs.existsSync(example)) {
 
 const ATARI_SETS = ['atarixl', 'hardware', 'sys', 'atarifp', 'basic', 'dos'].map((n) => `symbols/${n}.dop`);
 
+// n 8 KB banks at $A000; bank 0 holds `code` at $A000 and a header
+// pointing there
+function cartImage(n, code) {
+    const b = new Uint8Array(n * 0x2000);
+    b.set(code, 0);
+    b.set([0x00, 0xA0, 0x00, 0x04, 0x00, 0xA0], 0x1FFA);
+    return b;
+}
+
 const cases = [
     {
         name: 'esmc', file: 'escm/Educational System Master Cartridge (Atari).bin',
@@ -124,6 +133,13 @@ const cases = [
             return b;
         })(),
     },
+    // built-in bank register labels for the cartridge type
+    { name: 'cart-atarimax-regs', type: 'cart', cartType: 41, expect: ['sta CARTBANK+12', 'sta CARTOFF', 'CARTBANK equ $D500'],
+      bytes: cartImage(16, [0x8D, 0x0C, 0xD5, 0x8D, 0x10, 0xD5, 0x60]) },     // sta $D50C / sta $D510 / rts
+    { name: 'cart-williams-regs', type: 'cart', cartType: 8, expect: ['lda CARTBANK+3', 'sta CARTOFF'],
+      bytes: cartImage(8, [0xAD, 0x03, 0xD5, 0x8D, 0x08, 0xD5, 0x60]) },      // lda $D503 / sta $D508 / rts
+    { name: 'cart-regs-override', type: 'cart', cartType: 8, directives: ['data bankreg=$D500+7'],
+      expect: ['lda bankreg+3'], bytes: cartImage(8, [0xAD, 0x03, 0xD5, 0x60]) },
     // every Atari symbol set at once, in priority order
     { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
     { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,

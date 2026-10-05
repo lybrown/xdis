@@ -1349,6 +1349,10 @@
                 `<label><input type="checkbox" data-sym="${esc(i.name)}" ${i.enabled !== false ? 'checked' : ''}> ${esc(i.name)}
                  <button class="x small" data-unsym="${esc(i.name)}" title="Remove">×</button></label>`).join('') + '</div>';
         }
+        if (S.img && S.img.cartDirectives && S.img.cartDirectives.length) {
+            h += `<div class="opts"><span class="dim">Cartridge: ${esc(S.img.cartName)} (built in)</span>` +
+                S.img.cartDirectives.map((d) => `<div class="mono dim" title="Bank registers for this cartridge type; your own labels take priority">${esc(X.directiveString(d))}</div>`).join('') + '</div>';
+        }
         $('symbol-sets').innerHTML = h;
 
         const el = $('dir-list');

@@ -212,11 +212,18 @@
     // visible at power-on, which are analyzed last so that global
     // directives (and the header vectors) refer to them.
 
-    const blocks = (size, at, boot) => ({ size, at, boot });
-    const xegs = blocks(0x2000, (i, n) => (i === n - 1 ? 0xA000 : 0x8000), (n) => [0, n - 1]);
-    const williams = blocks(0x2000, () => 0xA000, () => [0]);
-    const megacart = blocks(0x4000, () => 0x8000, () => [0]);
-    const sic = blocks(0x2000, (i) => (i & 1 ? 0xA000 : 0x8000), () => [1]);
+    // regs(n) lists the bank registers as [name, address, last offset] for n
+    // banks: CARTBANK selects (by the address accessed, or the value written),
+    // CARTOFF disables the cartridge.
+    const blocks = (size, at, boot, regs) => ({ size, at, boot, regs: regs || (() => []) });
+    const byValue = () => [['CARTBANK', 0xD500, 0xFF]];
+    const byAddress = (off, offLen) => (n) => [['CARTBANK', 0xD500, n - 1], ['CARTOFF', off, offLen]];
+    const xegs = blocks(0x2000, (i, n) => (i === n - 1 ? 0xA000 : 0x8000), (n) => [0, n - 1], byValue);
+    const williams = blocks(0x2000, () => 0xA000, () => [0], byAddress(0xD508, 7));
+    const atarimax128 = blocks(0x2000, () => 0xA000, () => [0], byAddress(0xD510, 0xF));
+    const atarimax1m = (boot) => blocks(0x2000, () => 0xA000, boot, byAddress(0xD580, 0x7F));
+    const megacart = blocks(0x4000, () => 0x8000, () => [0], byValue);
+    const sic = blocks(0x2000, (i) => (i & 1 ? 0xA000 : 0x8000), () => [1], byValue);
     const CART_TYPES = {
         1: ['Standard 8 KB', blocks(0x2000, () => 0xA000, () => [0])],
         2: ['Standard 16 KB', blocks(0x4000, () => 0x8000, () => [0])],
@@ -227,9 +234,9 @@
         14: ['XEGS 128 KB', xegs], 23: ['XEGS 256 KB', xegs], 24: ['XEGS 512 KB', xegs], 25: ['XEGS 1 MB', xegs],
         33: ['Switchable XEGS 32 KB', xegs], 34: ['Switchable XEGS 64 KB', xegs], 35: ['Switchable XEGS 128 KB', xegs],
         36: ['Switchable XEGS 256 KB', xegs], 37: ['Switchable XEGS 512 KB', xegs], 38: ['Switchable XEGS 1 MB', xegs],
-        41: ['Atarimax 128 KB', williams],
-        42: ['Atarimax 1 MB (old, boots bank $7F)', blocks(0x2000, () => 0xA000, (n) => [n - 1])],
-        75: ['Atarimax 1 MB (new)', williams],
+        41: ['Atarimax 128 KB', atarimax128],
+        42: ['Atarimax 1 MB (old, boots bank $7F)', atarimax1m((n) => [n - 1])],
+        75: ['Atarimax 1 MB (new)', atarimax1m(() => [0])],
         54: ['SIC! 128 KB', sic], 55: ['SIC! 256 KB', sic], 56: ['SIC! 512 KB', sic],
         26: ['MegaCart 16 KB', megacart], 27: ['MegaCart 32 KB', megacart], 28: ['MegaCart 64 KB', megacart],
         29: ['MegaCart 128 KB', megacart], 30: ['MegaCart 256 KB', megacart], 31: ['MegaCart 512 KB', megacart],
@@ -262,10 +269,10 @@
         let desc = CART_TYPES[cartType];
         if (!desc) {
             img.warnings.push(`Cartridge type ${cartType} is not supported yet; showing 8 KB banks at $A000`);
-            desc = ['Unknown', williams];
+            desc = ['Unknown', blocks(0x2000, () => 0xA000, () => [0])];
         }
         img.cartName = desc[0];
-        const { size, at, boot } = desc[1];
+        const { size, at, boot, regs } = desc[1];
         const n = Math.ceil(data.length / size);
         for (let i = 0; i < n; i++) {
             const seg = addSegment(img, at(i, n), data.subarray(i * size, (i + 1) * size));
@@ -274,6 +281,10 @@
             seg.prefix = 'b' + i + '_';
         }
         img.boot = new Set(boot(n).filter((i) => i < n).map((i) => i + 1));
+        // built-in labels for the bank registers; offsets in decimal so
+        // CARTBANK+12 reads as bank 12
+        img.cartDirectives = regs(n).map(([name, addr, range]) =>
+            ({ type: 'data', name, seg: 0, addr, range, dec: true, from: 'cartridge' }));
         // the header of the cartridge visible at power-on
         img.entries.push(
             { type: 'vector', name: null, seg: 0, addr: 0xBFFA, range: 1 },
@@ -491,6 +502,10 @@
         for (const k of ['syntax', 'dataPerLine', 'fillMin', 'patternMax', 'textPerLine']) {
             out.push(`;xdis option ${k} ${o[k]}`);
         }
+        if (model && model.img.cartDirectives && model.img.cartDirectives.length) {
+            out.push(`; ${model.img.cartName} bank registers (built into xdis)`);
+            for (const d of model.img.cartDirectives) out.push(directiveString(d));
+        }
         for (const d of project.directives) {
             if (CLI_TYPES.includes(d.type)) {
                 out.push(directiveString(d));
@@ -609,6 +624,7 @@
         const warnings = [];
         const warn = (msg, k, d) => warnings.push({ msg, k, dir: d && d.type in DIR_KINDS ? directiveString(d) : undefined });
         const real = img.segments;
+        if (img.cartDirectives) directives = directives.concat(img.cartDirectives);
         const R = relocations(img, directives, warn);
         directives = directives.map(R.toRun);
         const segs = real.concat(R.pieces);
@@ -650,7 +666,7 @@
             const prev = labels.get(k);
             if (prev && (prev.off === 0 || off > 0)) return;
             let ref = name;
-            if (off) ref = opts.rangelabels ? `${name}_${hx(off)}` : `${name}+${off > 9 ? '$' + hx(off) : off}`;
+            if (off) ref = opts.rangelabels ? `${name}_${hx(off)}` : `${name}+${off > 9 && !(d && d.dec) ? '$' + hx(off) : off}`;
             const def = !off || opts.rangelabels;
             labels.set(k, { name: ref, base: def ? ref : name, baseKey: def ? k : base, off: def ? 0 : off, user: true, dir: d });
         }
