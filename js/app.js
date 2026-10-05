@@ -236,10 +236,24 @@
         }
         let cm = '';
         if (ln.u) cm += `<span class="u">; ${esc(ln.u.replace(/\n/g, ' '))}</span> `;
-        if (ln.x) cm += esc(ln.x);
+        if (ln.x) cm += xrefHtml(ln);
         else if (ln.k === 'dir' && ln.c) cm += '; ' + esc(ln.c);
         const cls = 'row k-' + ln.k + (cur ? ' cur' : '') + (sel ? ' sel' : '');
         return `<div class="${cls}" data-i="${i}"><span class="ad">${ad}</span><span class="by">${by}</span><span class="src">${src}</span><span class="cm">${cm}</span></div>`;
+    }
+
+    // The Access/Callers comment with each referencing address as a link.
+    function xrefHtml(ln) {
+        const r = S.model.refs.get(lineKey(ln));
+        if (!r) return esc(ln.x);
+        const keys = new Map();
+        for (const k of r.access.concat(r.callers)) {
+            if (typeof k === 'number') keys.set(S.listing.refName(k), k);
+        }
+        return ln.x.split(' ').map((w) => {
+            const k = keys.get(w);
+            return k === undefined ? esc(w) : `<span class="xl" data-xk="${k}" title="Go to ${hexAddr(X.keyAddr(k))}">${esc(w)}</span>`;
+        }).join(' ');
     }
 
     function ensureVisible(i, center) {
@@ -690,6 +704,7 @@
             [';  /  :', 'Line comment / block comment'],
             ['O / K', 'Operand override / name an immediate constant'],
             ['Enter', 'Follow operand — or double/Ctrl-click a symbol'],
+            ['Click', 'An address in an Access: or Callers: comment jumps to that instruction'],
             ['Esc / Alt+←', 'Go back · Alt+→ forward'],
             ['G', 'Go to address or label'],
             ['X', 'Show cross references in the inspector'],
@@ -1495,6 +1510,14 @@
             const row = e.target.closest('.row');
             if (!row) return;
             const i = +row.dataset.i;
+            const xl = e.target.closest('[data-xk]');
+            if (xl && e.button === 0) {
+                // jump to the caller/accessor
+                e.preventDefault();
+                moveTo(i);
+                goKey(+xl.dataset.xk);
+                return;
+            }
             const byte = e.target.closest('[data-a]');
             const pick = byte && !e.shiftKey ? +byte.dataset.a : undefined;
             if (e.button === 2) {

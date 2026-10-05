@@ -179,6 +179,8 @@ main {
 .row.k-label .src, .row.k-equ .src, .row.k-mid .src, .row.k-note .src, .row.k-seg .src, .row.k-dir .src { width: auto; min-width: var(--srcw, 40ch); padding-right: 2ch; }
 .row .cm { flex: 1 1 auto; color: var(--dim); text-overflow: ellipsis; }
 .row .cm .u { color: var(--ucm); }
+.row .cm .xl { cursor: pointer; }
+.row .cm .xl:hover { color: var(--sym); text-decoration: underline; }
 .row.sel { background: var(--sel); }
 .row.cur { background: var(--cur); }
 #listing:focus .row.cur { box-shadow: inset 2px 0 var(--accent); }

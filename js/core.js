@@ -1053,7 +1053,7 @@
             for (let m = 0; m < ln.n; m++) lineOf[ln.s - 1][ln.a - T.seg.start + m] = i;
         });
 
-        return { lines: all, lineOf, firstLine, problems, defined, used };
+        return { lines: all, lineOf, firstLine, problems, defined, used, refName };
     }
 
     // One line of assembly source, according to the comment options.

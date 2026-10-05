@@ -209,6 +209,27 @@ function check(name, ok, detail) {
     check('map drag past the start clamps to the start', S.listing.lines[S.cur].s === S.model.S[0].seg.index);
     map.dispatchEvent(new w.PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: mr.left - 300, clientY: mr.top }));
 
+    // 9e. Callers / Access comments link to the referencing instruction
+    for (const kind of ['label', 'data']) {
+        const xi = S.listing.lines.findIndex((l) => l.k === kind && l.x && S.model.refs.get(X.key(l.s, l.a)) &&
+            S.model.refs.get(X.key(l.s, l.a))[kind === 'label' ? 'callers' : 'access'].some((r) => typeof r === 'number'));
+        if (xi < 0) { log('skip', 'no ' + kind + ' xref'); continue; }
+        S.cur = S.anchor = xi;
+        doc.getElementById('listing').scrollTop = Math.max(0, xi * 18 - 100);
+        doc.getElementById('listing').dispatchEvent(new w.Event('scroll'));
+        for (let t = 0; t < 100 && !doc.querySelector(`.row[data-i="${xi}"]`); t++) await sleep(10);
+        const link = doc.querySelector(`.row[data-i="${xi}"] .cm [data-xk]`);
+        check(`${kind} xref is a link`, !!link, S.listing.lines[xi].x);
+        if (!link) continue;
+        const want = +link.dataset.xk;
+        link.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+        const got = S.listing.lines[S.cur];
+        check(`clicking ${link.textContent} jumps there`, got.a === X.keyAddr(want) && got.s === X.keySeg(want),
+            `${X.h4(got.a)} vs ${X.h4(X.keyAddr(want))}`);
+        key('Escape');
+        check('Esc returns from xref jump', S.cur === xi);
+    }
+
     // 10. context menu offers the actions
     const row = doc.querySelector('.row.cur');
     row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));

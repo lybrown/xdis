@@ -67,6 +67,7 @@ Click a line or select a range (shift+arrows or drag), then:
 | `O` | Operand override, e.g. `#<buffer` |
 | `K` | Name an immediate constant (like `dis -C`) |
 | `Enter` | Follow the operand (or double-click / Ctrl+click a symbol) |
+| click | An address in an `Access:` or `Callers:` comment jumps to that instruction |
 | `Esc`, `Alt+←/→` | Navigate back / forward |
 | `G` | Go to an address (`2000`, `3:2000`) or label |
 | `Ctrl+Z` `Ctrl+Y` | Undo / redo |
