@@ -86,6 +86,13 @@ const cases = [
       options: { syntax: 'mads' }, mads: true, expect: ['lda #>lBA45'] },
     { name: 'bomber-pointers', file: 'bomber/bomber.xex', include: ['symbols/sys.dop', 'symbols/hardware.dop'], pointers: true,
       expect: ['#>l7ED5', '#<l7ED5'] },
+    // page registers: with pmdata labeled, PMBASE's #$43 becomes #>pmdata
+    { name: 'galaxian-pages', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true, pointers: true,
+      directives: ['data pmdata=$4300'], expect: ['lda #>pmdata', 'pmdata equ $4300', 'lda #>l3A00'] },
+    // labels in operand overrides get their equates
+    { name: 'override-refs', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json',
+      directives: ['data pmdata=$4300', 'operand 5:$4800 #>pmdata', 'lo 5:$4801 $1243'],
+      expect: ['lda #>pmdata', 'pmdata equ $4300'] },
     // every Atari symbol set at once, in priority order
     { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
     { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,

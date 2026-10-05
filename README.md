@@ -83,6 +83,7 @@ Click a line or select a range (shift+arrows or drag), then:
 | `O` | Operand override, e.g. `#<buffer` |
 | `K` | Name an immediate constant (like `dis -C`) |
 | `R` | Relocate: the bytes are loaded here but run elsewhere (`org r:`) |
+| `>` `<` | The immediate (or picked byte) is the high / low byte of an address |
 | `Enter` | Follow the operand (or double-click / Ctrl+click a symbol) |
 | click | An address in an `Access:` or `Callers:` comment jumps to that instruction |
 | `Esc`, `Alt+←/→` | Navigate back / forward |
@@ -128,13 +129,21 @@ To show `lda #$BA` / `lda #$45` as `lda #>target` / `lda #<target`, use a split
 pointer directive naming the two operand bytes, high byte first:
 `codeptr $A393_A397` (also traces the target as code) or `address $A393_A397`.
 
+When only one half is in the code, e.g. a page number for `PMBASE`, use
+`hi $4801` (the byte is the high byte of `$XX00`), `hi $4801 $4380` for a
+specific address, or `lo $4805 $4380`. Press `>` or `<` on the instruction to
+do this from the listing. Labels named in an operand override (`O`) also get
+their `equ` emitted, so `#>pmdata` works there too.
+
 xdis suggests these itself (in Problems, with an *Apply all* button) when two
 immediates are stored into adjacent bytes `P` and `P+1`, or passed in a register
 pair to a subroutine, and there is evidence that they form an address. Either
 `P` is a known word location (a pointer used as `(P),y`, `jmp (P)`, a vector,
 or a 2-byte range in a symbol set), or the address lands on loaded code or a
 label. Stores to the I/O area are ignored. Jump vectors become `codeptr`, and
-pointers used for data become `address`.
+pointers used for data become `address`. On Atari, an immediate stored into a
+page register (`PMBASE`, `CHBASE`, `CHBAS`) is suggested as `hi` when that page
+is loaded or has a label. `DLISTL` and `SDLSTL` count as pointers.
 
 The *Problems* panel lists load, trace and label warnings. Click one to
 jump to the address it concerns, or to the directive that caused it.

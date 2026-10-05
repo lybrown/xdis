@@ -304,6 +304,12 @@ function check(name, ok, detail) {
         for (let i = 0; i < 200 && !(w2.xdis && w2.xdis.listing); i++) await sleep(50);
         const S2 = w2.xdis;
         const waitFor = async (cond) => { for (let i = 0; i < 300 && !cond(); i++) await sleep(10); return cond(); };
+        const addDir2 = async (text) => {
+            const inp = d2.getElementById('dir-add');
+            inp.value = text;
+            inp.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            await sleep(30);
+        };
         const ask2 = async (fn) => { for (let i = 0; i < 100 && !d2.getElementById('dlg').open; i++) await sleep(10); return fn(); };
         // a directive inside the block, to follow through relocation and back
         const inBlock = S2.project.directives.find((d) => d.type !== 'relocate' && d.addr >= 0x5600 && d.addr <= 0x75FF);
@@ -369,7 +375,29 @@ function check(name, ok, detail) {
             w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));
             await sleep(30);
         }
-        // remove it again via R
+        // > on an immediate marks it as the high byte of an address
+        await gotoText('5:$4800');
+        check('cursor on lda #$43', S2.listing.lines[S2.cur].a === 0x4800);
+        w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: '>' }));
+        await ask2(() => {
+            const inp = d2.getElementById('dlg-input');
+            check('> prefills the page address', inp && inp.value === '$4300', inp && inp.value);
+            inp.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        });
+        const l4800 = () => S2.listing.lines.find((l) => l.s === 5 && l.a === 0x4800 && l.k === 'ins');
+        await waitFor(() => /#>l4300/.test(l4800().p.map((p) => p[1]).join('')));
+        check('> gives #>l4300', /#>l4300/.test(l4800().p.map((p) => p[1]).join('')));
+        await addDir2('data pmdata=$4300');
+        check('labeling the page gives #>pmdata', /#>pmdata/.test(l4800().p.map((p) => p[1]).join('')));
+        check('pmdata equ emitted', /^pmdata equ \$4300/m.test(w2.XDis.asmText(S2.listing, S2.project.options)));
+        await sleep(60);
+        check('inspector lists the hi directive', /hi (5:)?\$4801/.test(d2.getElementById('tab-inspect').textContent));
+        w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));
+        w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));
+        await sleep(30);
+
+        // remove it again via R, from inside the block
+        await gotoText('$A000');
         w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'r' }));
         await ask2(() => d2.querySelector('#dlg button[value=remove]').click());
         await waitFor(() => !S2.model.pieces.length);

@@ -233,11 +233,11 @@
     // carried through .dop files as ";xdis ..." comment lines.
 
     const CLI_TYPES = ['code', 'data', 'vector', 'constant', 'address', 'codeptr'];
-    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate'];
+    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo'];
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
-    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1 };
+    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1 };
 
     const ALIASES = {
         c: 'code', d: 'data', C: 'constant', v: 'vector', A: 'address',
@@ -280,6 +280,7 @@
 
     function directiveString(d) {
         if (d.type === 'relocate') return `relocate ${specString(d)} $${hx(d.run)}`;
+        if (d.type === 'hi' || d.type === 'lo') return `${d.type} ${specString(d)}${d.target !== undefined ? ' $' + hx(d.target) : ''}`;
         if (d.type === 'comment' || d.type === 'note' || d.type === 'operand') {
             const loc = (d.seg ? d.seg + ':' : '') + '$' + hx(d.addr);
             return `${d.type} ${loc} ${d.text.replace(/\\/g, '\\\\').replace(/\n/g, '\\n')}`;
@@ -305,6 +306,18 @@
             if (d.hi !== undefined) throw new Error('relocate takes a single address range');
             d.run = parseInt(r[2], 16);
             if (d.run + d.range > 0xFFFF) throw new Error(`relocate: $${hx(d.run)}+${hx(d.range)} runs past $FFFF`);
+            return d;
+        }
+        if (type === 'hi' || type === 'lo') {
+            // hi [seg:]$ADDR[+N] [$TARGET]: byte(s) at ADDR are the high (low)
+            // byte of TARGET, which defaults to $XX00 for hi
+            const r = /^(\S+)(?:\s+\$?([0-9a-fA-F]{1,4}))?$/.exec(m[2]);
+            if (!r) throw new Error(`Bad ${type}: ${m[2]} (expected e.g. ${type} $4801${type === 'lo' ? ' $4380' : ''})`);
+            const d = parseSpec(type, r[1]);
+            if (d.hi !== undefined) throw new Error(`${type} takes a single address`);
+            if (r[2] !== undefined) d.target = parseInt(r[2], 16);
+            if (type === 'lo' && d.target === undefined) throw new Error('lo needs the full target address, e.g. lo $4805 $4380');
+            if (d.target !== undefined && d.range) throw new Error(`${type} with a target applies to a single byte`);
             return d;
         }
         if (CLI_TYPES.includes(type) || EXT_TYPES.includes(type)) {
@@ -483,13 +496,15 @@
         }
         for (const list of holesOf.values()) list.sort((x, y) => x.load - y.load);
         // Directives on load addresses inside a block apply to the block at
-        // its run address.
+        // its run address. A global directive only does when no other segment
+        // loads that address (with the block moved out, that one is there).
+        const otherLoads = (a, parent) => real.some((s) => s.index !== parent && a >= s.start && a <= s.end);
         const toRun = (d) => {
             if (d.type === 'relocate') return d;
             for (const p of pieces) {
                 const n = p.data.length;
                 if (d.addr < p.load || d.addr >= p.load + n) continue;
-                if (d.seg ? d.seg !== p.parent : loadOwner[d.addr] !== p.parent) continue;
+                if (d.seg ? d.seg !== p.parent : otherLoads(d.addr, p.parent)) continue;
                 const t = Object.assign({}, d, { addr: p.start + d.addr - p.load, seg: d.seg ? p.index : 0, orig: d });
                 if (d.hi !== undefined && d.hi >= p.load && d.hi < p.load + n) t.hi = p.start + d.hi - p.load;
                 return t;
@@ -787,6 +802,30 @@
             return !!(T && T.ilen[keyAddr(k) - T.seg.start]);
         }
 
+        // hi/lo: single bytes that are one half of an address
+        for (const d of directives) {
+            if (d.type !== 'hi' && d.type !== 'lo') continue;
+            for (let off = 0; off <= d.range; off++) {
+                const a = d.addr + off;
+                const s = resolveSeg(d, a);
+                if (s <= 0) {
+                    warn(`${directiveString(d)}: $${h4(a)} is not loaded`, undefined, d);
+                    break;
+                }
+                const T = S[s - 1];
+                const o = a - T.seg.start;
+                const b = T.seg.data[o];
+                const t = d.target !== undefined ? d.target : b << 8;
+                if ((d.type === 'hi' ? t >> 8 : t & 0xFF) !== b) {
+                    warn(`${directiveString(d)}: the byte at $${h4(a)} is $${h2(b)}, not the ${d.type === 'hi' ? 'high' : 'low'} byte of $${h4(t)}`, key(s, a), d);
+                    continue;
+                }
+                const ts = finalOwner[t];
+                need.add(key(ts, t));
+                T.ptr.set(o, { t, ts, part: d.type === 'hi' ? '>' : '<', other: -1 });
+            }
+        }
+
         for (const sg of findRelocations()) {
             warnings.push({
                 msg: `Code at $${h4(sg.dir.addr)}-$${h4(sg.dir.addr + sg.dir.range)} is copied to $${h4(sg.dir.run)} ` +
@@ -900,7 +939,11 @@
         // suggested with evidence that it is an address: P is used as a
         // pointer, or the address lands on code or a label.
         function findPointerPairs() {
-            const ptrUse = new Set();        // zero page / absolute pointers in use
+            // Atari only: page registers take the high byte of an address, and
+            // the display list pointers are words (C64 has other chips there)
+            const atari = img.type !== 'prg';
+            const PAGE_REGS = atari ? new Map([[0xD407, 'PMBASE'], [0xD409, 'CHBASE'], [0x2F4, 'CHBAS']]) : new Map();
+            const ptrUse = new Set(atari ? [0xD402, 0x230] : []);   // zero page / absolute pointers in use
             const jumpVec = new Set();       // ... used by jmp (P) or declared as vectors
             const dataPtr = new Set();       // ... used by (P),y / (P,x)
             for (const d of directives) {
@@ -946,6 +989,7 @@
                         regs[reg] = { v: x.lo, at: x.a + 1, i };
                     } else if ((mn === 'sta' || mn === 'stx' || mn === 'sty') && (x.op.mode === 'zp' || x.op.mode === 'abs')) {
                         const P = x.op.mode === 'zp' ? x.lo : x.w;
+                        if (regs[reg] && PAGE_REGS.has(P)) page(T, regs[reg], P);
                         if (regs[reg]) {
                             stores.set(P, Object.assign({ i }, regs[reg]));
                             pair(T, stores.get(P - 1), stores.get(P), P - 1, 'store');
@@ -971,8 +1015,33 @@
             });
             return out;
 
+            // an immediate stored into a page register: the page of a label or
+            // of loaded memory
+            // an instruction whose operand is overridden is already handled
+            function overridden(T, at) {
+                return operands.has(key(T.seg.index, at - 1));
+            }
+
+            function page(T, r, P) {
+                if (!r.v || seen.has(r.at) || overridden(T, r.at)) return;
+                const t = r.v << 8;
+                const l = labelAt(key(finalOwner[t], t));
+                if (!finalOwner[t] && !(l && l.user)) return;
+                const Tb = segOf(key(T.seg.index, r.at));
+                if (!Tb || Tb.ptr.has(r.at - Tb.seg.start)) return;
+                seen.add(r.at);
+                const name = l && !l.off ? l.name : 'l' + h4(t);
+                out.push({
+                    at: key(T.seg.index, r.at - 1),
+                    dir: { type: 'hi', name: null, seg: cover[r.at] > 1 ? T.seg.index : 0, addr: r.at, range: 0 },
+                    msg: `#$${h2(r.v)} at $${h4(r.at - 1)} stored into ${PAGE_REGS.get(P)} is the page of $${h4(t)} ` +
+                        `— click to show it as #>${name}`,
+                });
+            }
+
             function pair(T, lo, hi, P, via) {
                 if (!lo || !hi || lo.at === hi.at || Math.abs(lo.i - hi.i) > 12) return;
+                if (overridden(T, lo.at) || overridden(T, hi.at)) return;
                 const t = lo.v | (hi.v << 8);
                 if (t < 0x100) return;
                 const target = isTarget(t);
@@ -1120,7 +1189,10 @@
             const lo = mem[off + 1], hi = mem[off + 2];
             const ts = T.tseg[off];
             const ok = operands.get(key(T.seg.index, i));
-            if (ok !== undefined) return [['op', ok]];
+            if (ok !== undefined) {
+                overrideRefs(ok);
+                return [['op', ok]];
+            }
             let tgt, l, val;
             switch (op.mode) {
                 case 'imp': return [];
@@ -1160,6 +1232,23 @@
                 case 'izy': return [['pun', '('], v, ['pun', '),y']];
                 case 'ind': return [['pun', '('], v, ['pun', ')']];
                 default: return ab.concat([v]);
+            }
+        }
+
+        // Labels named in an operand override count as references, so their
+        // equates are emitted. Auto label names like l4300 work too.
+        function overrideRefs(text) {
+            for (const name of text.match(/[A-Za-z_?@][\w?@]*/g) || []) {
+                if (used.has(name)) continue;
+                const k = model.names.get(name);
+                if (k !== undefined) { used.set(name, k); continue; }
+                const m = /^(?:s(\d+))?l([0-9A-F]{4})$/.exec(name);
+                if (m) {
+                    const a = parseInt(m[2], 16);
+                    used.set(name, key(m[1] ? +m[1] : model.finalOwner[a], a));
+                    continue;
+                }
+                for (const [v, c] of consts) if (c === name) usedConsts.set(c, v);
             }
         }
 
@@ -1555,8 +1644,9 @@
         const n = d.range + 1;
         const pieceIndex = real.length + dirs.filter((x) => x.type === 'relocate').length + 1;
         const loaded = (a) => real.some((s) => a >= s.start && a <= s.end);
+        const otherLoads = (a) => real.some((s) => s.index !== parent && a >= s.start && a <= s.end);
         const inside = (x) => x.type !== 'relocate' && x.addr >= d.addr && x.addr < d.addr + n &&
-            (x.seg ? x.seg === parent : loadOwner[x.addr] === parent);
+            (x.seg ? x.seg === parent : !otherLoads(x.addr));
         const out = dirs.map((x) => {
             if (!inside(x)) return x;
             const ra = d.run + x.addr - d.addr;

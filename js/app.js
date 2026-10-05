@@ -515,6 +515,8 @@
         operand: { label: 'Operand override…', key: 'O' },
         constant: { label: 'Name constant…', key: 'K' },
         relocate: { label: 'Relocate (org r:)…', key: 'R' },
+        hibyte: { label: 'High byte of an address (#>)…', key: '>' },
+        lobyte: { label: 'Low byte of an address (#<)…', key: '<' },
     };
 
     function collapse() {
@@ -565,6 +567,8 @@
             case 'operand': return editOperand(ln);
             case 'constant': return editConstant(ln);
             case 'relocate': return relocateDialog(r);
+            case 'hibyte': return editHalf(ln, 'hi');
+            case 'lobyte': return editHalf(ln, 'lo');
         }
     }
 
@@ -643,6 +647,59 @@
         const bad = S.model.warnings.find((w) => w.dir === X.directiveString(d));
         if (bad) return setStatus(bad.msg, true);
         goKey(X.key(S.model.pieces.find((x) => x.dir.addr === d.addr && x.dir.run === d.run).index, d.run));
+    }
+
+    // The byte that `>`/`<` applies to: a picked byte, the operand of an
+    // immediate instruction, or a one-byte data line.
+    function halfByte(ln) {
+        if (!ln || !ln.s || ln.a < 0) return null;
+        const sub = subAddr();
+        if (sub !== null) return sub;
+        if (ln.k === 'label' || ln.k === 'note' || ln.k === 'mid') {
+            // on a label line, mean the instruction or data it labels
+            const i = lineForKey(X.key(ln.s, ln.a), 'ins');
+            ln = i >= 0 ? S.listing.lines[i] : ln;
+            if (ln.k !== 'ins' && ln.k !== 'data') return null;
+        }
+        const T = S.model.S[ln.s - 1];
+        if (ln.k === 'ins' && X.OPS[T.seg.data[ln.a - T.seg.start]].mode === 'imm') return ln.a + 1;
+        if (ln.k === 'data') return ln.a;
+        return null;
+    }
+
+    // Mark one byte as the high or low byte of an address: #>label / #<label.
+    async function editHalf(ln, type) {
+        const a = halfByte(ln);
+        if (a === null) return setStatus('Select an immediate instruction or pick a byte first', true);
+        const T = S.model.segOf(X.key(ln.s, a));
+        const b = T.seg.data[a - T.seg.start];
+        const sc = scopeSeg(ln.s, a);
+        const existing = S.project.directives.find((d) => (d.type === 'hi' || d.type === 'lo') && d.addr === a && (d.seg || 0) === sc);
+        const cur = existing ? (existing.target !== undefined ? existing.target : b << 8) : null;
+        const text = await promptText(
+            `$${X.h2(b)} at $${X.h4(a)} is the ${type === 'hi' ? 'high' : 'low'} byte of…`,
+            cur !== null ? '$' + X.h4(cur) : type === 'hi' ? `$${X.h2(b)}00` : '',
+            {
+                placeholder: type === 'hi' ? `$${X.h2(b)}00` : `$xx${X.h2(b)}`,
+                help: `The operand becomes #${type === 'hi' ? '>' : '<'}label. Leave empty to remove.`,
+                validate: (v) => {
+                    if (!v.trim()) return null;
+                    const t = parseHex(v);
+                    if (t === null) return 'Enter a hex address';
+                    if ((type === 'hi' ? t >> 8 : t & 0xFF) !== b) return `Its ${type === 'hi' ? 'high' : 'low'} byte must be $${X.h2(b)}`;
+                    return null;
+                },
+            });
+        if (text === null) return;
+        const t = text.trim() ? parseHex(text) : null;
+        commit((p) => {
+            p.directives = p.directives.filter((d) => !((d.type === 'hi' || d.type === 'lo') && d.addr === a && (d.seg || 0) === sc));
+            if (t !== null) {
+                const d = { type, name: null, seg: sc, addr: a, range: 0 };
+                if (type === 'lo' || t !== b << 8) d.target = t;
+                p.directives.push(d);
+            }
+        }, t === null ? `Removed ${type} at $${X.h4(a)}` : `$${X.h4(a)} is the ${type === 'hi' ? 'high' : 'low'} byte of $${X.h4(t)}`);
     }
 
     function removeRelocation(d) {
@@ -908,6 +965,7 @@
             [';  /  :', 'Line comment / block comment'],
             ['O / K', 'Operand override / name an immediate constant'],
             ['R', 'Relocate: bytes loaded here run at another address (org r:)'],
+            ['> / <', 'The immediate (or picked byte) is the high / low byte of an address'],
             ['Enter', 'Follow operand — or double/Ctrl-click a symbol'],
             ['Click', 'An address in an Access: or Callers: comment jumps to that instruction'],
             ['Esc / Alt+←', 'Go back · Alt+→ forward'],
@@ -961,6 +1019,10 @@
         if (ln.k === 'ins') {
             items.push(mi('operand', ACTIONS.operand.label, 'O'));
             items.push(mi('constant', ACTIONS.constant.label, 'K'));
+        }
+        if (halfByte(ln) !== null) {
+            items.push(mi('hibyte', ACTIONS.hibyte.label, '>'));
+            items.push(mi('lobyte', ACTIONS.lobyte.label, '<'));
         }
         items.push('<div class="sep"></div>');
         items.push(mi('copy', 'Copy selection as assembly', ''));
@@ -1030,7 +1092,8 @@
         return out.sort((a, b) => (a[0] < b[0] ? -1 : 1)).map((x) => x[1]).join('');
     }
 
-    function directivesAt(seg, a) {
+    function directivesAt(seg, a, n) {
+        const last = a + Math.max(1, n || 1) - 1;
         const p = S.project;
         const res = [];
         const match = (d) => {
@@ -1039,8 +1102,8 @@
             if (!ds && seg && S.model.finalOwner[a] !== seg && S.model.finalOwner[a]) return false;
             if (d.type === 'constant' || d.type === 'relocate') return false;
             const end = d.addr + (d.type === 'vector' ? d.range | 1 : d.range);
-            const inLo = a >= d.addr && a <= end;
-            const inHi = d.hi !== undefined && a >= d.hi && a <= d.hi + d.range;
+            const inLo = d.addr <= last && end >= a;
+            const inHi = d.hi !== undefined && d.hi <= last && d.hi + d.range >= a;
             return inLo || inHi;
         };
         const T = S.model.S[seg - 1];
@@ -1100,6 +1163,9 @@
                 placeholder="${esc(ln.p.slice(3).map((p) => p[1]).join('').trim())}" spellcheck="false" autocomplete="off"></div>`;
             if (op.mode === 'imm') {
                 const v = T.seg.data[off + 1];
+                h += `<div class="field"><label>Immediate #$${X.h2(v)} is part of an address</label><div class="row2">
+                    <button data-act="hibyte" title="Show as #>label">High byte (#&gt;) <kbd>&gt;</kbd></button>
+                    <button data-act="lobyte" title="Show as #<label">Low byte (#&lt;) <kbd>&lt;</kbd></button></div></div>`;
                 h += `<div class="field"><label>Constant name for #$${X.h2(v)} <span class="dim">(all uses)</span></label>
                     <input type="text" id="in-const" data-v="${v}" value="${esc(S.model.consts.get(v) || '')}" spellcheck="false" autocomplete="off"></div>`;
             }
@@ -1117,7 +1183,7 @@
             h += `<h3>Operand target</h3><div class="xref"><a data-k="${target[2]}">${esc(tl ? tl.name : hexAddr(X.keyAddr(target[2])))}</a>
                 <span class="dim">${hexAddr(X.keyAddr(target[2]))}</span></div>`;
         }
-        const dirs = directivesAt(ln.s, a);
+        const dirs = directivesAt(ln.s, a, sub !== null ? 1 : lineBytes(ln));
         if (dirs.length) {
             h += '<h3>Directives here</h3><div class="list mono">' + dirs.map(({ d, i, inc }) =>
                 `<div class="item"><span class="nm" title="${esc(X.directiveString(d))}">${esc(X.directiveString(d))}</span>${inc ? `<span class="kd">${esc(inc)}</span>` : `${dirTag(d)}<button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button>`}</div>`).join('') + '</div>';
@@ -1448,6 +1514,18 @@
         commit((pr) => { pr.directives = pr.directives.concat([nd]); }, `Added ${X.directiveString(nd)}`);
     }
 
+    async function halfSuggestion(p) {
+        const d = p.suggest;
+        const name = (/#>(\S+)$/.exec(p.msg) || [])[1] || '';
+        const btn = await ask('Show as the high byte of an address',
+            `<p>${esc(p.msg.replace(/ — click.*/, ''))}.</p>
+             <pre class="mono">    lda #&gt;${esc(name)}	; $${X.h4(d.addr - 1)}</pre>
+             <p class="dim">Adds <code>${esc(X.directiveString(d))}</code></p>`,
+            [{ label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]);
+        if (btn !== 'ok') return;
+        commit((pr) => { pr.directives = pr.directives.concat([d]); }, `Added ${X.directiveString(d)}`);
+    }
+
     function applyAllPointerSuggestions() {
         const list = (S.problems || []).filter((p) => p.suggest && p.suggest.type !== 'relocate').map((p) => p.suggest);
         if (!list.length) return;
@@ -1459,6 +1537,7 @@
         if (p.suggest) {
             goKey(p.k);
             if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest);
+            else if (p.suggest.type === 'hi') halfSuggestion(p);
             else pointerSuggestion(p);
             return;
         }
@@ -2161,6 +2240,7 @@
         const keys = {
             c: 'code', d: 'data', t: 'text', w: 'word', a: 'address', p: 'codeptr', v: 'vector',
             u: 'undefine', n: 'name', l: 'name', ';': 'comment', ':': 'note', o: 'operand', k: 'constant', r: 'relocate',
+            '>': 'hibyte', '<': 'lobyte',
         };
         const key = e.key.length === 1 ? e.key : '';
         if (key === 'g' || key === 'G') { e.preventDefault(); return gotoPrompt(); }
