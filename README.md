@@ -169,7 +169,8 @@ detects the BIT-skip trick. Traced instruction sets match the CLI on every
 test file. Where xdis intentionally differs:
 
 * Data bytes are grouped (16 per line by default), and long runs of a repeated
-  byte become `:N dta $XX`.
+  byte become `:N dta $XX`. Optionally (*Repeat patterns up to* under
+  *Project*), repeated patterns become `:N dta $XX,$YY,...` too.
 * Pointer tables and vectors are shown as `dta a(label)`.
 * A plain label inside a data range overrides the range's `name+N` instead of
   being dropped as a duplicate.

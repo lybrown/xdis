@@ -281,6 +281,17 @@ function check(name, ok, detail) {
     doc.querySelector('[data-tab=inspect]').click();
     key('z', { ctrlKey: true });
 
+    // 9h. repeated patterns are opt-in from the Project panel
+    doc.querySelector('[data-tab=project]').click();
+    const pm = doc.querySelector('[data-num=patternMax]');
+    check('pattern option present and off', pm && pm.value === '0');
+    pm.value = '16';
+    pm.dispatchEvent(new w.Event('change', { bubbles: true }));
+    check('pattern option applied', S.project.options.patternMax === 16);
+    key('z', { ctrlKey: true });
+    check('pattern option undoable', !S.project.options.patternMax);
+    doc.querySelector('[data-tab=inspect]').click();
+
     // 10. context menu offers the actions
     const row = doc.querySelector('.row.cur');
     row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));

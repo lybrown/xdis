@@ -100,6 +100,13 @@ const cases = [
     { name: 'bomb-jack-selfmod', project: 'xdis/examples/bomb-jack-v1.5.xdis.json', pointers: true,
       directives: ['label dlivec=3:$55AC+1'],
       expect: ['dlivec equ *+1', 'lda #<s3l5595', 'sta dlivec', 'lda #>s3l5140', 'sta dlivec+1'] },
+    // repeated patterns (opt-in): :N dta $XX,$YY,...
+    { name: 'bomber-patterns', file: 'bomber/bomber.xex', options: { patternMax: 16 }, expectRe: [/^ +:\d+ dta \$[0-9A-F]{2},/m] },
+    { name: 'boink-patterns', file: 'a8boink/A8_BOINK.XEX', options: { patternMax: 16 }, expectRe: [/^ +:\d+ dta (\$[0-9A-F]{2},){8}\$/m] },
+    { name: 'bomb-jack-patterns', project: 'xdis/examples/bomb-jack-v1.5.xdis.json', options: { patternMax: 16 },
+      expectRe: [/^ +:\d+ dta (\$[0-9A-F]{2},){7}\$/m] },
+    { name: 'bomb-jack-patterns-mads', project: 'xdis/examples/bomb-jack-v1.5.xdis.json',
+      options: { patternMax: 16, syntax: 'mads' }, mads: true, expectRe: [/^ +:\d+ dta \$[0-9A-F]{2},/m] },
     // every Atari symbol set at once, in priority order
     { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
     { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,
@@ -295,6 +302,11 @@ for (const c of cases) {
         const same = X.sameCode(model, X.analyze(img, X.allDirectives(pruned), project.options));
         results.push(`unneeded ${removable.size}/${sc.total}: ${same ? 'joint removal ok' : 'JOINT REMOVAL CHANGES CODE'}`);
         ok = ok && same;
+    }
+    for (const re of c.expectRe || []) {
+        const found = re.test(asm);
+        results.push(`expect ${re}: ${found ? 'found' : 'MISSING'}`);
+        ok = ok && found;
     }
     for (const e of c.expect || []) {
         const found = asm.includes(e);

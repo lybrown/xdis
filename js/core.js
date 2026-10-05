@@ -400,7 +400,7 @@
         for (const [dop, opt] of Object.entries(OPTION_MAP)) {
             out.push(`${dop} ${o[opt] ? 1 : 0}`);
         }
-        for (const k of ['syntax', 'dataPerLine', 'fillMin', 'textPerLine']) {
+        for (const k of ['syntax', 'dataPerLine', 'fillMin', 'patternMax', 'textPerLine']) {
             out.push(`;xdis option ${k} ${o[k]}`);
         }
         for (const d of project.directives) {
@@ -456,6 +456,7 @@
             dataPerLine: 16,
             textPerLine: 32,
             fillMin: 32,           // collapse runs of identical bytes into :N dta; 0 = off
+            patternMax: 0,         // also repeated patterns up to this many bytes; 0 = off
         };
     }
 
@@ -1402,6 +1403,31 @@
                 labelLines(T, a);
                 const f = T.fmt[off];
                 const p = T.ptr.get(off);
+                // The best repeat starting at c: {p: pattern length, n: count}
+                // covering at least fillMin bytes (patterns need 3 copies), or
+                // null. Patterns longer than one byte are opt-in (patternMax).
+                // With full false, any qualifying repeat is returned early.
+                const repeatAt = (c, full) => {
+                    if (opts.fillMin <= 1) return null;
+                    const maxP = Math.max(1, Math.min(64, opts.patternMax | 0));
+                    const o = c - start;
+                    const free = (x) => x <= end && !T.ilen[x - start] && !T.ptr.has(x - start) &&
+                        T.fmt[x - start] === f && !hasLabelDef(T, x);
+                    const enough = (p, n) => n >= (p === 1 ? 2 : 3) && n * p >= opts.fillMin;
+                    let best = null;
+                    for (let p = 1; p <= maxP; p++) {
+                        let k = 1;
+                        while (k < p && free(c + k)) k++;
+                        if (k < p) break;              // a longer pattern would cross the same break
+                        while (free(c + k) && data[o + k] === data[o + k - p]) {
+                            k++;
+                            if (!full && k % p === 0 && enough(p, k / p)) return { p, n: k / p };
+                        }
+                        const n = Math.floor(k / p);
+                        if (enough(p, n) && (!best || n * p > best.n * best.p)) best = { p, n };
+                    }
+                    return best;
+                };
                 const lineEnd = (max) => {
                     // last address that may share a line with a
                     let b = a;
@@ -1440,25 +1466,22 @@
                     dataLine(T, a, b - a + 1, parts);
                     a = b + 1;
                 } else {
-                    // fill runs
-                    let run = 1;
-                    if (opts.fillMin > 1) {
-                        while (a + run <= end && data[off + run] === data[off] && !T.ilen[off + run] &&
-                            !T.ptr.has(off + run) && T.fmt[off + run] === f && !hasLabelDef(T, a + run)) run++;
-                    }
-                    if (opts.fillMin > 1 && run >= opts.fillMin) {
-                        dataLine(T, a, run, [['dir', ':' + run + ' dta '], ['num', '$' + h2(data[off]), undefined, a]]);
-                        a += run;
+                    // a repeated byte or pattern: ":N dta $XX[,...]"
+                    const rp = repeatAt(a, true);
+                    if (rp) {
+                        const parts = [['dir', `:${rp.n} dta `]];
+                        for (let i = 0; i < rp.p; i++) {
+                            if (i) parts.push(['pun', ',']);
+                            parts.push(['num', '$' + h2(data[off + i]), undefined, a + i]);
+                        }
+                        dataLine(T, a, rp.n * rp.p, parts);
+                        a += rp.n * rp.p;
                         continue;
                     }
                     let b = lineEnd(perLine);
-                    // keep a following fill run whole
-                    if (opts.fillMin > 1) {
-                        for (let c = a + 1; c <= b; c++) {
-                            let r = 1;
-                            while (c + r <= end && r < opts.fillMin && data[c + r - start] === data[c - start]) r++;
-                            if (r >= opts.fillMin) { b = c - 1; break; }
-                        }
+                    // keep a following repeat whole
+                    for (let c = a + 1; c <= b; c++) {
+                        if (repeatAt(c, false)) { b = c - 1; break; }
                     }
                     const parts = [['dir', 'dta ']];
                     for (let c = a; c <= b; c++) {
