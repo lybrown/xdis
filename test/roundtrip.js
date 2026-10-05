@@ -114,6 +114,22 @@ const cases = [
     { name: 'esmc-allsyms', file: 'escm/Educational System Master Cartridge (Atari).bin', type: 'raw', org: 0xA000,
       include: ATARI_SETS, expect: ['dta a(lB800)', 'CARTFG'] },
     {
+        // SETVBV takes the VBI routine in Y/X: suggested as a code pointer and
+        // traced, even though nothing else reaches the routine
+        name: 'setvbv', type: 'raw', org: 0x2000, directives: ['code $2000'], pointers: true,
+        expect: ['ldx #>l2010', 'ldy #<l2010', 'jmp XITVBV'], include: ['symbols/sys.dop'],
+        bytes: Uint8Array.from([
+            0xA2, 0x20,             // 2000 ldx #$20
+            0xA0, 0x10,             // 2002 ldy #$10
+            0xA9, 0x07,             // 2004 lda #7 (deferred)
+            0x20, 0x5C, 0xE4,       // 2006 jsr SETVBV
+            0x60,                   // 2009 rts
+            0, 0, 0, 0, 0, 0,       // 200A
+            0xEE, 0x00, 0x06,       // 2010 inc $0600   (the VBI routine)
+            0x4C, 0x62, 0xE4,       // 2013 jmp XITVBV
+        ]),
+    },
+    {
         // zero page code with a forward reference: xasm needs "z:" or it
         // assembles lda l0085 as absolute
         name: 'zp-forward', type: 'raw', org: 0x80, directives: ['code $80'], expect: ['lda z:l0085'],

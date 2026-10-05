@@ -960,6 +960,9 @@
             // the display list pointers are words (C64 has other chips there)
             const atari = img.type !== 'prg';
             const PAGE_REGS = atari ? new Map([[0xD407, 'PMBASE'], [0xD409, 'CHBASE'], [0x2F4, 'CHBAS']]) : new Map();
+            // OS routines that take a code address in registers: SETVBV gets the
+            // VBI routine in Y (low) and X (high), with A = 6 immediate / 7 deferred
+            const REG_VECTORS = atari ? new Map([[0xE45C, { lo: 'y', hi: 'x' }]]) : new Map();
             const ptrUse = new Set(atari ? [0xD402, 0x230] : []);   // zero page / absolute pointers in use
             const jumpVec = new Set();       // ... used by jmp (P) or declared as vectors
             const dataPtr = new Set();       // ... used by (P),y / (P,x)
@@ -1032,9 +1035,18 @@
                             stores.delete(P);
                         }
                     } else if (mn === 'jsr') {
-                        // register pair passed to a routine: try Y/X and A/X, A/Y orders
-                        for (const [lo, hi] of [['y', 'x'], ['a', 'x'], ['a', 'y']]) {
-                            if (regs[lo] && regs[hi]) pair(T, regs[lo], regs[hi], -1, x.w);
+                        const known = REG_VECTORS.get(x.w);
+                        if (known) {
+                            // a routine with a known register convention
+                            if (regs[known.lo] && regs[known.hi]) {
+                                const kind = x.w === 0xE45C && regs.a ? { 6: 'immediate VBI', 7: 'deferred VBI' }[regs.a.v] : null;
+                                pair(T, regs[known.lo], regs[known.hi], -1, x.w, kind || 'code');
+                            }
+                        } else {
+                            // register pair passed to a routine: try Y/X and A/X, A/Y orders
+                            for (const [lo, hi] of [['y', 'x'], ['a', 'x'], ['a', 'y']]) {
+                                if (regs[lo] && regs[hi]) pair(T, regs[lo], regs[hi], -1, x.w);
+                            }
                         }
                         reset();
                         return;
@@ -1099,7 +1111,9 @@
                 });
             }
 
-            function pair(T, lo, hi, P, via) {
+            // `known` is set for routines whose convention says the pair is a
+            // code address (the routine is a VBI installer, ...): no evidence needed.
+            function pair(T, lo, hi, P, via, known) {
                 if (!lo || !hi || lo.at === hi.at || Math.abs(lo.i - hi.i) > 12) return;
                 if (overridden(T, lo.at) || overridden(T, hi.at)) return;
                 const t = lo.v | (hi.v << 8);
@@ -1107,7 +1121,7 @@
                 const target = isTarget(t, T);
                 const viaJsr = typeof via === 'number';
                 if (viaJsr) {
-                    if (!target) return;                 // registers: need loaded code or a label
+                    if (!target && !known) return;       // registers: need loaded code or a label
                 } else if (!ptrUse.has(P)) {
                     if (!target || isIO(P)) return;      // adjacent hardware registers are not pointers
                 }
@@ -1119,13 +1133,13 @@
                 seen.add(hi.at);
                 const scoped = (a) => (cover[a] > 1 ? T.seg.index : 0);
                 // code pointer for jump vectors, or code targets not reached as data
-                const code = viaJsr ? target === 'code'
+                const code = viaJsr ? target === 'code' || !!known
                     : jumpVec.has(P) || (target === 'code' && !dataPtr.has(P));
                 const dir = { type: code ? 'codeptr' : 'address', name: null, seg: scoped(lo.at), addr: lo.at, range: 0, hi: hi.at };
                 const tname = nameAt(T, t) || 'l' + h4(t);
                 let where;
                 if (viaJsr) {
-                    where = `passed to ${nameAt(T, via) || '$' + h4(via)}`;
+                    where = `passed to ${nameAt(T, via) || '$' + h4(via)}${known && known !== 'code' ? ' as the ' + known + ' routine' : ''}`;
                 } else {
                     const jx = jumpAt.get(P);
                     where = `stored into ${nameAt(T, P) || '$' + h4(P)}${jx ? `, the operand of ${jx.op.mn} at $${h4(jx.a)}` : ''}`;

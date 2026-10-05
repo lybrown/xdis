@@ -145,6 +145,11 @@ pointers used for data become `address`. On Atari, an immediate stored into a
 page register (`PMBASE`, `CHBASE`, `CHBAS`) is suggested as `hi` when that page
 is loaded or has a label. `DLISTL` and `SDLSTL` count as pointers.
 
+Known OS routines that take a code address in registers are recognized: on
+Atari, `ldx #hi` / `ldy #lo` before `jsr SETVBV` is suggested as a code
+pointer to the VBI routine (immediate or deferred, from `A`), which also traces
+the routine.
+
 Self-modifying jumps are covered too. The operand of a `jmp`/`jsr abs` counts as
 a code pointer, so immediates written into it are suggested as `codeptr` pairs,
 or as `lo` when only the low byte is written. In that case the page is taken

@@ -1548,12 +1548,17 @@
             return T2 ? T2.seg.data[at - T2.seg.start] : 0;
         };
         const t = imm(d.addr) | (imm(d.hi) << 8);
+        // the instruction whose operand byte is at `at` (lda, ldx, ldy, ...)
+        const mnAt = (at) => {
+            const T2 = S.model.segOf(X.key(d.seg || S.model.finalOwner[at], at)) || T;
+            return T2 && at - 1 >= T2.seg.start ? X.OPS[T2.seg.data[at - 1 - T2.seg.start]].mn : 'lda';
+        };
         const l = S.model.labelAt(X.key(S.model.finalOwner[t], t));
         const name = l && !l.off ? l.name : 'l' + X.h4(t);
         let type = d.type;
         const body = `<p>${esc(p.msg.replace(/ — click.*/, ''))}.</p>
-            <pre class="mono">    lda #&gt;${esc(name)}	; $${X.h4(d.hi - 1)}
-    lda #&lt;${esc(name)}	; $${X.h4(d.addr - 1)}</pre>
+            <pre class="mono">    ${mnAt(d.hi)} #&gt;${esc(name)}	; $${X.h4(d.hi - 1)}
+    ${mnAt(d.addr)} #&lt;${esc(name)}	; $${X.h4(d.addr - 1)}</pre>
             <div class="opts">
             <label><input type="radio" name="pt" value="codeptr" ${type === 'codeptr' ? 'checked' : ''}> Code pointer — also trace $${X.h4(t)} as code</label>
             <label><input type="radio" name="pt" value="address" ${type === 'address' ? 'checked' : ''}> Data pointer</label></div>
