@@ -1238,6 +1238,61 @@
         return out;
     }
 
+    // Directive types that can change which bytes are traced as code.
+    const TRACE_TYPES = ['code', 'data', 'text', 'word', 'vector', 'address', 'codeptr'];
+
+    // True when two analyses have the same instructions in every segment.
+    function sameCode(a, b) {
+        if (a.S.length !== b.S.length) return false;
+        for (let i = 0; i < a.S.length; i++) {
+            const x = a.S[i].ilen, y = b.S[i].ilen;
+            if (x.length !== y.length) return false;
+            for (let o = 0; o < x.length; o++) if (x[o] !== y[o]) return false;
+        }
+        return true;
+    }
+
+    // Find project directives that are not needed to get the current code/
+    // data split. Removing *all* of the ones reported removable together
+    // leaves the traced code unchanged. Candidates are tried greedily:
+    // unnamed directives first, pointers and vectors last, and each test also
+    // drops the ones already found removable. Work is done one directive per
+    // step() so callers can spread it out; step() returns {d, removable} or
+    // null when finished.
+    function redundancyScan(img, project, model) {
+        const all = allDirectives(project);
+        const rank = (d) => (d.name ? 1 : 0) + (POINTER_TYPES.includes(d.type) ? 2 : 0);
+        const order = project.directives
+            .map((d, i) => [d, i])
+            .filter(([d]) => TRACE_TYPES.includes(d.type))
+            .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1])
+            .map(([d]) => d);
+        const removed = new Set();
+        let i = 0;
+        return {
+            total: order.length,
+            done: () => i,
+            step() {
+                if (i >= order.length) return null;
+                const d = order[i++];
+                const removable = !touchesLoaded(model, d) ||
+                    sameCode(model, analyze(img, all.filter((x) => x !== d && !removed.has(x)), project.options));
+                if (removable) removed.add(d);
+                return { d, removable };
+            },
+        };
+    }
+
+    // Directives that only touch unloaded memory cannot affect tracing.
+    function touchesLoaded(model, d) {
+        const span = d.type === 'code' ? 0 : d.type === 'vector' ? d.range | 1 : d.range;
+        for (let o = 0; o <= span; o++) {
+            if (d.addr + o <= 0xFFFF && model.cover[d.addr + o]) return true;
+            if (d.hi !== undefined && d.hi + o <= 0xFFFF && model.cover[d.hi + o]) return true;
+        }
+        return false;
+    }
+
     function serializeProject(project, bytes, embed) {
         const p = {
             xdis: 1,
@@ -1275,6 +1330,7 @@
         detectType, loadImage, analyze, render, asmText, lineText,
         parseDop, exportDop, dedupeImported, parseDirectiveLine, directiveString, specString,
         defaultOptions, newProject, allDirectives, serializeProject, deserializeProject,
+        redundancyScan, sameCode, TRACE_TYPES,
         toBase64, fromBase64,
         edit: { setName, markCode, markData, markPointers, undefine, setText, setConstant, subtract },
         CLI_TYPES, EXT_TYPES, DATA_TYPES, POINTER_TYPES,

@@ -83,6 +83,69 @@
         }
         updateAll();
         scheduleSave();
+        startScan();
+    }
+
+    // ------------------------------------------------------------------
+    // Which directives are not needed for the code/data split. Runs in the
+    // background in small slices and restarts after every change.
+
+    let scanId = 0;
+    let scanDrawn = 0;
+    function startScan() {
+        const id = ++scanId;
+        S.dirState = new Map();
+        S.scan = null;
+        if (!S.model) return;
+        const sc = X.redundancyScan(S.img, S.project, S.model);
+        S.scan = sc;
+        const step = () => {
+            if (id !== scanId) return;
+            const t0 = performance.now();
+            let r;
+            while (performance.now() - t0 < 20 && (r = sc.step())) {
+                S.dirState.set(r.d, r.removable ? unneededKind(r.d) : 'needed');
+            }
+            const finished = sc.done() >= sc.total;
+            if (finished || performance.now() - scanDrawn > 300) {
+                scanDrawn = performance.now();
+                if (!$('tab-directives').hidden) updateDirectives();
+                else updateDirCount();
+                if (finished && !$('tab-inspect').hidden) updateInspector();
+            }
+            if (!finished) setTimeout(step, 0);
+        };
+        setTimeout(step, 30);
+    }
+
+    // How a directive that doesn't change the code/data split is labelled.
+    function unneededKind(d) {
+        if (d.type === 'code' || d.type === 'data') return d.name ? 'name' : 'none';
+        return 'format';
+    }
+
+    const DIR_TAGS = {
+        none: ['no effect', 'Not needed: removing this (together with the other "no effect", "name only" and "format only" directives) leaves code and data unchanged'],
+        name: ['name only', 'Not needed for tracing: it only supplies the name, which a plain label would also do'],
+        format: ['format only', 'Not needed for tracing: it only changes how the bytes are shown (text, words or pointers)'],
+    };
+
+    function dirTag(d) {
+        const st = S.dirState && S.dirState.get(d);
+        if (!st || st === 'needed') return '';
+        const [text, title] = DIR_TAGS[st];
+        return `<span class="tag tag-${st}" title="${esc(title)}">${text}</span>`;
+    }
+
+    function updateDirCount() {
+        const p = S.project;
+        let unneeded = 0;
+        for (const st of (S.dirState || new Map()).values()) if (st !== 'needed') unneeded++;
+        const sc = S.scan;
+        let t = p.directives.length ? `(${p.directives.length})` : '';
+        if (sc && sc.done() < sc.total) t += ` · checking ${sc.done()}/${sc.total}…`;
+        else if (unneeded) t += ` · ${unneeded} not needed for tracing`;
+        $('dir-count').textContent = t;
     }
 
     function updateAll() {
@@ -907,7 +970,7 @@
         const dirs = directivesAt(ln.s, a);
         if (dirs.length) {
             h += '<h3>Directives here</h3><div class="list mono">' + dirs.map(({ d, i, inc }) =>
-                `<div class="item"><span class="nm" title="${esc(X.directiveString(d))}">${esc(X.directiveString(d))}</span>${inc ? `<span class="kd">${esc(inc)}</span>` : `<button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button>`}</div>`).join('') + '</div>';
+                `<div class="item"><span class="nm" title="${esc(X.directiveString(d))}">${esc(X.directiveString(d))}</span>${inc ? `<span class="kd">${esc(inc)}</span>` : `${dirTag(d)}<button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button>`}</div>`).join('') + '</div>';
         }
         el.innerHTML = h;
         const bindEnter = (id, fn, multi) => {
@@ -1005,16 +1068,20 @@
 
         const el = $('dir-list');
         const f = $('dir-filter').value.trim().toLowerCase();
+        const onlyUnneeded = $('dir-unneeded').checked;
         const out = [];
         p.directives.forEach((d, i) => {
             const s = X.directiveString(d);
             if (f && !s.toLowerCase().includes(f)) return;
+            const st = S.dirState && S.dirState.get(d);
+            if (onlyUnneeded && (!st || st === 'needed')) return;
             if (out.length < 3000) {
-                out.push(`<div class="item" data-goto="${(d.seg || 0) * 0x10000 + d.addr}" data-type="${d.type}"><span class="nm" title="${esc(s)} — double-click to edit">${esc(s)}</span><button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button></div>`);
+                out.push(`<div class="item" data-goto="${(d.seg || 0) * 0x10000 + d.addr}" data-type="${d.type}"><span class="nm" title="${esc(s)} — double-click to edit">${esc(s)}</span>${dirTag(d)}<button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button></div>`);
             }
         });
-        el.innerHTML = out.join('') || '<div class="more">No directives yet. Use the keys in the listing, or type one above.</div>';
-        $('dir-count').textContent = p.directives.length ? `(${p.directives.length})` : '';
+        el.innerHTML = out.join('') || (onlyUnneeded ? '<div class="more">None found — every tracing directive is needed.</div>'
+            : '<div class="more">No directives yet. Use the keys in the listing, or type one above.</div>');
+        updateDirCount();
     }
 
     // Edit directive i in place: its text becomes an input in dis option
@@ -1710,6 +1777,7 @@
         });
         $('label-filter').addEventListener('input', updateLabels);
         $('dir-filter').addEventListener('input', updateDirectives);
+        $('dir-unneeded').addEventListener('change', updateDirectives);
         $('dir-add').addEventListener('keydown', (e) => {
             if (e.key !== 'Enter') return;
             const v = e.target.value.trim();
@@ -1788,6 +1856,7 @@
         for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('on', b.dataset.tab === name);
         for (const p of document.querySelectorAll('.side .panel')) p.hidden = p.id !== 'tab-' + name;
         if (name === 'labels') $('label-filter').focus();
+        if (name === 'directives') updateDirectives();
     }
 
     function onKey(e) {

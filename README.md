@@ -78,6 +78,13 @@ All of these are also available in the right-click menu and in the
 directives that apply at the cursor. The memory map strip above the listing
 shows code, data, text and pointers; click it to jump.
 
+Directives that are not needed to get the current split between code and data
+are tagged *no effect*, *name only* (a plain label would do) or *format only*
+(it only changes how bytes are shown). All tagged directives can be removed
+**together** without changing what gets traced; the check is greedy, so when
+two directives make each other redundant only one of them is tagged. Tick
+*Only show directives not needed for tracing* to review them.
+
 The *Problems* panel lists load, trace and label warnings. Click one to
 jump to the address it concerns, or to the directive that caused it.
 

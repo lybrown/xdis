@@ -176,6 +176,17 @@ for (const c of cases) {
         ok = ok && same;
     }
 
+    // Every directive the scan calls unneeded can be removed together.
+    if (project.directives.length) {
+        const sc = X.redundancyScan(img, project, model);
+        const removable = new Set();
+        let r;
+        while ((r = sc.step())) if (r.removable) removable.add(r.d);
+        const pruned = Object.assign({}, project, { directives: project.directives.filter((d) => !removable.has(d)) });
+        const same = X.sameCode(model, X.analyze(img, X.allDirectives(pruned), project.options));
+        results.push(`unneeded ${removable.size}/${sc.total}: ${same ? 'joint removal ok' : 'JOINT REMOVAL CHANGES CODE'}`);
+        ok = ok && same;
+    }
     for (const e of c.expect || []) {
         const found = asm.includes(e);
         results.push(`expect "${e}": ${found ? 'found' : 'MISSING'}`);

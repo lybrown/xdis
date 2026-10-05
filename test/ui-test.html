@@ -258,6 +258,29 @@ function check(name, ok, detail) {
     doc.querySelector('[data-tab=inspect]').click();
     check('undo removes the test directives', !S.project.directives.some((d) => d.name === 'dupname' || d.seg === 99));
 
+    // 9g. directives not needed for tracing are marked
+    const traced = S.listing.lines.filter((l) => l.k === 'ins')[60];
+    const loc = (S.img.multi && S.model.cover[traced.a] > 1 ? traced.s + ':' : '') + '$' + X.h4(traced.a);
+    await addDir('code ' + loc);
+    const extra = S.project.directives[S.project.directives.length - 1];
+    for (let t = 0; t < 300 && !(S.scan && S.scan.done() >= S.scan.total); t++) await sleep(10);
+    check('scan finishes', S.scan.done() === S.scan.total, `${S.scan.done()}/${S.scan.total}`);
+    check('redundant code entry marked "no effect"', S.dirState.get(extra) === 'none');
+    const needed = S.project.directives.find((d) => d.type === 'code' && d.addr === 0x20FF);
+    check('needed code entry not marked', !needed || S.dirState.get(needed) === 'needed');
+    doc.querySelector('[data-tab=directives]').click();
+    doc.getElementById('dir-unneeded').click();
+    const shown = Array.from(doc.querySelectorAll('#dir-list .item .nm')).map((n) => n.textContent);
+    check('filter shows only unneeded', shown.includes(X.directiveString(extra)) && shown.every((t) => {
+        const d = S.project.directives.find((x) => X.directiveString(x) === t);
+        return d && S.dirState.get(d) !== 'needed';
+    }), shown.length + ' shown');
+    check('tag rendered', !!doc.querySelector('#dir-list .tag-none'));
+    check('count mentions unneeded', /not needed for tracing/.test(doc.getElementById('dir-count').textContent));
+    doc.getElementById('dir-unneeded').click();
+    doc.querySelector('[data-tab=inspect]').click();
+    key('z', { ctrlKey: true });
+
     // 10. context menu offers the actions
     const row = doc.querySelector('.row.cur');
     row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));
