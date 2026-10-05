@@ -46,6 +46,32 @@
         return out.join(',');
     }
 
+    // Parts for a text `dta`: c'...' runs and numbers, each tagged with the
+    // address of its first byte so single characters can be picked out.
+    function textParts(data, from, to, addr) {
+        const parts = [];
+        let str = '', strAt = 0;
+        const flush = () => {
+            if (!str) return;
+            if (parts.length) parts.push(['pun', ',']);
+            parts.push(['str', "c'" + str + "'", undefined, strAt]);
+            str = '';
+        };
+        for (let o = from; o <= to; o++) {
+            const b = data[o];
+            if (b >= 0x20 && b < 0x7F && b !== 0x27) {
+                if (!str) strAt = addr + o - from;
+                str += String.fromCharCode(b);
+            } else {
+                flush();
+                if (parts.length) parts.push(['pun', ',']);
+                parts.push(['num', '$' + h2(b), undefined, addr + o - from]);
+            }
+        }
+        flush();
+        return parts;
+    }
+
     function sortUniq(list) {
         return Array.from(new Set(list)).sort();
     }
@@ -860,11 +886,11 @@
                     return b;
                 };
                 if (bitjmp) {
-                    dataLine(T, a, 1, [['dir', 'dta '], ['num', '$2C']], '<--- Bit Jump');
+                    dataLine(T, a, 1, [['dir', 'dta '], ['num', '$2C', undefined, a]], '<--- Bit Jump');
                     a++;
                 } else if (p) {
                     const l = sym(p.ts, p.t);
-                    const tv = l ? ['sym', l.name, key(p.ts, p.t)] : ['num', '$' + h4(p.t), key(p.ts, p.t)];
+                    const tv = l ? ['sym', l.name, key(p.ts, p.t), a] : ['num', '$' + h4(p.t), key(p.ts, p.t), a];
                     if (p.part === '<' && p.other === a + 1 && a + 1 <= end && !T.ilen[off + 1] && !hasLabelDef(T, a + 1)) {
                         dataLine(T, a, 2, [['dir', 'dta '], ['pun', 'a('], tv, ['pun', ')']]);
                         a += 2;
@@ -874,10 +900,7 @@
                     }
                 } else if (f === FMT.text) {
                     const b = lineEnd(Math.max(1, opts.textPerLine | 0));
-                    const enc = encodeText(data.subarray(off, b - start + 1));
-                    dataLine(T, a, b - a + 1, [['dir', 'dta ']].concat(
-                        enc.split(/,(?=(?:[^']*'[^']*')*[^']*$)/).flatMap((t, i) =>
-                            (i ? [['pun', ',']] : []).concat([[t[0] === 'c' ? 'str' : 'num', t]]))));
+                    dataLine(T, a, b - a + 1, [['dir', 'dta ']].concat(textParts(data, off, b - start, a)));
                     a = b + 1;
                 } else if (f === FMT.word && a < end && !T.ilen[off + 1] && !hasLabelDef(T, a + 1)) {
                     let b = lineEnd(perLine * 2);
@@ -885,7 +908,7 @@
                     const parts = [['dir', 'dta ']];
                     for (let w = a; w < b; w += 2) {
                         if (w > a) parts.push(['pun', ',']);
-                        parts.push(['pun', 'a('], ['num', '$' + h4(data[w - start] | (data[w - start + 1] << 8))], ['pun', ')']);
+                        parts.push(['pun', 'a('], ['num', '$' + h4(data[w - start] | (data[w - start + 1] << 8)), undefined, w], ['pun', ')']);
                     }
                     dataLine(T, a, b - a + 1, parts);
                     a = b + 1;
@@ -897,7 +920,7 @@
                             !T.ptr.has(off + run) && T.fmt[off + run] === f && !hasLabelDef(T, a + run)) run++;
                     }
                     if (opts.fillMin > 1 && run >= opts.fillMin) {
-                        dataLine(T, a, run, [['dir', ':' + run + ' dta '], ['num', '$' + h2(data[off])]]);
+                        dataLine(T, a, run, [['dir', ':' + run + ' dta '], ['num', '$' + h2(data[off]), undefined, a]]);
                         a += run;
                         continue;
                     }
@@ -913,7 +936,7 @@
                     const parts = [['dir', 'dta ']];
                     for (let c = a; c <= b; c++) {
                         if (c > a) parts.push(['pun', ',']);
-                        parts.push(['num', '$' + h2(data[c - start])]);
+                        parts.push(['num', '$' + h2(data[c - start]), undefined, c]);
                     }
                     dataLine(T, a, b - a + 1, parts);
                     a = b + 1;

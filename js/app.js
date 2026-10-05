@@ -112,15 +112,33 @@
         return ln && ln.a >= 0 && (ln.s || ln.k === 'equ') ? X.key(ln.s, ln.a) : null;
     }
 
+    // A byte picked inside the cursor line (click a byte, or Left/Right), or
+    // null when the whole line is meant.
+    function subAddr() {
+        const ln = curLine();
+        if (S.sub === null || S.sub === undefined || !ln || S.anchor !== S.cur || !ln.s) return null;
+        return S.sub >= ln.a && S.sub < ln.a + ln.n ? S.sub : null;
+    }
+
+    // Key of the address the cursor refers to.
+    function curKey() {
+        const ln = curLine();
+        const sub = subAddr();
+        return sub !== null ? X.key(ln.s, sub) : lineKey(ln);
+    }
+
     function viewAnchor() {
         const ln = curLine();
-        return { k: lineKey(ln), kind: ln && ln.k, off: S.cur * LH - $('listing').scrollTop, idx: S.cur };
+        return { k: curKey(), kind: ln && ln.k, off: S.cur * LH - $('listing').scrollTop, idx: S.cur };
     }
 
     function restoreView(v) {
         let i = v.k !== null ? lineForKey(v.k, v.kind) : -1;
         if (i < 0) i = Math.min(v.idx, S.listing.lines.length - 1);
         S.cur = S.anchor = i;
+        const ln = S.listing.lines[i];
+        const a = v.k !== null ? X.keyAddr(v.k) : -1;
+        S.sub = ln && ln.n && a > ln.a && a < ln.a + ln.n ? a : null;
         $('listing').scrollTop = i * LH - v.off;
     }
 
@@ -172,31 +190,48 @@
         drawViewport();
     }
 
-    function bytesOf(ln) {
+    // Raw bytes column; each byte can be clicked to pick it.
+    function bytesOf(ln, sub) {
         const T = S.model.S[ln.s - 1];
         if (!T || !ln.n) return '';
         const off = ln.a - T.seg.start;
-        const b = Array.from(T.seg.data.subarray(off, off + Math.min(ln.n, 3)), X.h2);
-        return ln.n > 3 ? b.slice(0, 2).join(' ') + ' …' : b.join(' ');
+        const shown = ln.n > 3 ? 2 : ln.n;
+        let h = '';
+        for (let m = 0; m < shown; m++) {
+            const a = ln.a + m;
+            h += (m ? ' ' : '') + `<span class="b${a === sub ? ' bsel' : ''}" data-a="${a}">${X.h2(T.seg.data[off + m])}</span>`;
+        }
+        return ln.n > 3 ? h + ' …' : h;
     }
 
     function rowHtml(ln, i, cur, sel) {
         let ad = '', by = '';
+        const sub = cur ? subAddr() : null;
         if (ln.a >= 0 && ln.k !== 'seg' && ln.k !== 'dir') {
             const multi = S.img.multi && ln.s && S.model.cover[ln.a] > 1;
-            ad = (multi ? `<span class="sg">${ln.s}:</span>` : '') + X.h4(ln.a);
-            by = ln.s ? bytesOf(ln) : '';
+            ad = (multi ? `<span class="sg">${ln.s}:</span>` : '') + X.h4(sub !== null ? sub : ln.a);
+            by = ln.s ? bytesOf(ln, sub) : '';
         }
         let src = '';
-        for (const [cls, text, k] of ln.p) {
+        for (const [cls, text, k, a] of ln.p) {
+            const pick = a !== undefined ? ` data-a="${a}"` : '';
+            const bsel = a !== undefined && a === sub ? ' bsel' : '';
             if (cls === 'pun') {
                 src += esc(text);
+            } else if (cls === 'str' && a !== undefined) {
+                // one span per character so each byte of a string can be picked
+                src += `<span class="t-str">c'`;
+                for (let c = 2; c < text.length - 1; c++) {
+                    const ca = a + c - 2;
+                    src += `<span data-a="${ca}"${ca === sub ? ' class="bsel"' : ''}>${esc(text[c])}</span>`;
+                }
+                src += `'</span>`;
             } else if (k !== undefined && (cls === 'sym' || cls === 'lbl' || cls === 'num')) {
                 const c = cls === 'num' ? 't-num' : 't-' + cls;
-                src += `<span class="${c}" data-k="${k}" title="${hexAddr(X.keyAddr(k))}">${esc(text)}</span>`;
+                src += `<span class="${c}${bsel}" data-k="${k}"${pick} title="${hexAddr(X.keyAddr(k))}">${esc(text)}</span>`;
             } else {
                 const c = cls === 'mn' && ln.ill ? 't-ill' : 't-' + cls;
-                src += `<span class="${c}">${esc(text)}</span>`;
+                src += `<span class="${c}${bsel}"${pick}>${esc(text)}</span>`;
             }
         }
         let cm = '';
@@ -222,15 +257,31 @@
     }
 
     let inspectTimer = 0;
-    function moveTo(i, extend, center) {
+    function moveTo(i, extend, center, sub) {
         if (!S.listing) return;
         i = Math.max(0, Math.min(S.listing.lines.length - 1, i));
         S.cur = i;
         if (!extend) S.anchor = i;
+        S.sub = sub === undefined ? null : sub;
         ensureVisible(i, center);
         draw();
         clearTimeout(inspectTimer);
         inspectTimer = setTimeout(updateInspector, 30);
+    }
+
+    // Step the picked byte left or right, moving to the neighbouring line at
+    // either end.
+    function stepByte(dir) {
+        const ln = curLine();
+        if (!ln) return;
+        const cur = subAddr() !== null ? subAddr() : ln.a;
+        const next = cur + dir;
+        if (ln.n > 1 && next >= ln.a && next < ln.a + ln.n) return moveTo(S.cur, false, false, next);
+        let i = S.cur + dir;
+        const L = S.listing.lines;
+        while (i >= 0 && i < L.length && !L[i].n) i += dir;
+        if (i < 0 || i >= L.length) return;
+        moveTo(i, false, false, dir < 0 && L[i].n > 1 ? L[i].a + L[i].n - 1 : undefined);
     }
 
     function updatePos() {
@@ -239,7 +290,9 @@
         if (!ln) { el.textContent = ''; return; }
         const [lo, hi] = selLines();
         const r = selRange();
-        let s = ln.a >= 0 && ln.k !== 'dir' ? (S.img.multi && ln.s ? ln.s + ':' : '') + X.h4(ln.a) : '';
+        const sub = subAddr();
+        let s = ln.a >= 0 && ln.k !== 'dir' ? (S.img.multi && ln.s ? ln.s + ':' : '') + X.h4(sub !== null ? sub : ln.a) : '';
+        if (sub !== null) s += ` (byte ${sub - ln.a + 1} of ${ln.n})`;
         if (lo !== hi && r) s += ` · ${hexAddr(r.lo)}–${hexAddr(r.hi)} (${r.hi - r.lo + 1} bytes)`;
         el.textContent = s + `  line ${S.cur + 1}/${S.listing.lines.length}`;
     }
@@ -258,6 +311,8 @@
     function selRange() {
         if (!S.listing) return null;
         const L = S.listing.lines;
+        const sub = subAddr();
+        if (sub !== null) return { seg: L[S.cur].s, lo: sub, hi: sub };
         const [lo, hi] = selLines();
         let seg = L[S.cur].s;
         if (!seg || L[S.cur].a < 0) {
@@ -392,9 +447,9 @@
                 commit((p) => { p.directives = E.undefine(p.directives, sc, r.lo, r.hi); }, `Undefined ${rangeText(r)}`);
                 return;
             }
-            case 'name': return rename(arg !== undefined ? arg : lineKey(ln));
-            case 'comment': return editText('comment', lineKey(ln));
-            case 'note': return editText('note', lineKey(ln));
+            case 'name': return rename(arg !== undefined ? arg : curKey());
+            case 'comment': return editText('comment', curKey());
+            case 'note': return editText('note', curKey());
             case 'operand': return editOperand(ln);
             case 'constant': return editConstant(ln);
         }
@@ -639,6 +694,7 @@
             ['G', 'Go to address or label'],
             ['X', 'Show cross references in the inspector'],
             ['Shift+↑↓ / drag', 'Select a range'],
+            ['← / →', 'Pick one byte of a line (or click it); N, ;, D… then apply to that byte. Double-click a byte to name it'],
             ['Ctrl+Z / Ctrl+Y', 'Undo / redo'],
             ['Ctrl+S', 'Save project · Ctrl+Shift+S save .asm'],
             ['Ctrl+O', 'Open binary'],
@@ -646,7 +702,8 @@
         dialog('Keyboard shortcuts', `<div class="help-grid">${rows.map(([k, v]) =>
             `<div>${k.split(' ').map((t) => (/^[\/·-]$|^or$/.test(t) ? esc(t) : `<kbd>${esc(t)}</kbd>`)).join(' ')}</div><div>${esc(v)}</div>`).join('')}</div>
             <p class="dim">Addresses accept hex with an optional segment, e.g. <code>3:2000</code>.
-            Directives use the dis option file syntax, so projects can be exported as .dop files for the CLI.</p>
+            Directives use the dis option file syntax, so projects can be exported as .dop files for the CLI.
+            Edit one with ✎ or by double-clicking it in the Directives panel.</p>
             <p class="dim">xdis — by Claude (Anthropic) with Lyren Brown, based on
             <a href="https://github.com/lybrown/dis" target="_blank" rel="noopener">dis</a>.
             <a href="https://github.com/lybrown/xdis" target="_blank" rel="noopener">Source</a> · MIT license.</p>`,
@@ -661,10 +718,10 @@
         if (!ln) return;
         const menu = $('ctx');
         const items = [];
-        const k = lineKey(ln);
+        const k = curKey();
         if (k !== null) {
             const l = S.model.labelAt(k);
-            items.push(`<div class="hd">${esc((ln.s && S.img.multi ? ln.s + ':' : '') + X.h4(ln.a))}${l && !l.off ? ' ' + esc(l.name) : ''}</div>`);
+            items.push(`<div class="hd">${esc((ln.s && S.img.multi ? ln.s + ':' : '') + X.h4(X.keyAddr(k)))}${l && !l.off ? ' ' + esc(l.name) : ''}</div>`);
         }
         if (symKey !== undefined) {
             const tl = S.model.labelAt(symKey);
@@ -783,8 +840,9 @@
                 : '<p class="dim">Open a binary to begin.</p>';
             return;
         }
-        const k = lineKey(ln);
-        const a = ln.a;
+        const sub = subAddr();
+        const k = curKey();
+        const a = sub !== null ? sub : ln.a;
         const l = S.model.labelAt(k);
         const [kc, kn] = kindOf(ln);
         const T = S.model.S[ln.s - 1];
@@ -796,7 +854,7 @@
             <span class="pill ${kc}">${kn}</span>${l && l.off ? `<span class="dim mono">${esc(l.name)}</span>` : ''}</div>`;
         if (T) {
             const off = a - T.seg.start;
-            const n = Math.max(lineBytes(ln), 1);
+            const n = sub !== null ? 1 : Math.max(lineBytes(ln), 1);
             h += `<div class="kv"><span>Bytes</span><span class="mono">${Array.from(T.seg.data.subarray(off, off + Math.min(n, 16)), X.h2).join(' ')}${n > 16 ? ' …' : ''}</span>
                 <span>Segment</span><span class="mono">${T.seg.index} ($${X.h4(T.seg.start)}–$${X.h4(T.seg.end)})</span></div>`;
         }
@@ -806,7 +864,7 @@
             <input type="text" id="in-comment" value="${esc(comment)}" spellcheck="false" autocomplete="off"></div>
             <div class="field"><label>Block comment <span class="dim">(Ctrl+Enter)</span></label>
             <textarea id="in-note" rows="2" spellcheck="false">${esc(note)}</textarea></div>`;
-        if (ln.k === 'ins') {
+        if (ln.k === 'ins' && sub === null) {
             const off = a - T.seg.start;
             const op = X.OPS[T.seg.data[off]];
             const ov = S.model.operands.get(k);
@@ -824,7 +882,8 @@
         }
         h += `<h3>Callers (${new Set(r.callers.map(String)).size})</h3><div class="xref">${refLinks(r.callers) || '<span class="dim">none</span>'}</div>`;
         h += `<h3>Accessed by (${new Set(r.access.map(String)).size})</h3><div class="xref">${refLinks(r.access) || '<span class="dim">none</span>'}</div>`;
-        const target = ln.p.find((p) => p[2] !== undefined && (p[0] === 'sym' || p[0] === 'num'));
+        const target = ln.p.find((p) => p[2] !== undefined && (p[0] === 'sym' || p[0] === 'num') &&
+            (sub === null || p[3] === undefined || p[3] === sub));
         if (target) {
             const tl = S.model.labelAt(target[2]);
             h += `<h3>Operand target</h3><div class="xref"><a data-k="${target[2]}">${esc(tl ? tl.name : hexAddr(X.keyAddr(target[2])))}</a>
@@ -833,7 +892,7 @@
         const dirs = directivesAt(ln.s, a);
         if (dirs.length) {
             h += '<h3>Directives here</h3><div class="list mono">' + dirs.map(({ d, i, inc }) =>
-                `<div class="item"><span class="nm" title="${esc(X.directiveString(d))}">${esc(X.directiveString(d))}</span>${inc ? `<span class="kd">${esc(inc)}</span>` : `<button class="x" data-del="${i}" title="Delete">×</button>`}</div>`).join('') + '</div>';
+                `<div class="item"><span class="nm" title="${esc(X.directiveString(d))}">${esc(X.directiveString(d))}</span>${inc ? `<span class="kd">${esc(inc)}</span>` : `<button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button>`}</div>`).join('') + '</div>';
         }
         el.innerHTML = h;
         const bindEnter = (id, fn, multi) => {
@@ -910,6 +969,7 @@
     // Directives panel
 
     function updateDirectives() {
+        if ($('tab-directives').querySelector('.dir-edit')) return;
         const p = S.project;
         // symbol sets
         const builtin = new Set(Object.keys(SYM.files));
@@ -935,11 +995,60 @@
             const s = X.directiveString(d);
             if (f && !s.toLowerCase().includes(f)) return;
             if (out.length < 3000) {
-                out.push(`<div class="item" data-goto="${(d.seg || 0) * 0x10000 + d.addr}" data-type="${d.type}"><span class="nm" title="${esc(s)}">${esc(s)}</span><button class="x" data-del="${i}" title="Delete">×</button></div>`);
+                out.push(`<div class="item" data-goto="${(d.seg || 0) * 0x10000 + d.addr}" data-type="${d.type}"><span class="nm" title="${esc(s)} — double-click to edit">${esc(s)}</span><button class="x" data-edit="${i}" title="Edit">✎</button><button class="x" data-del="${i}" title="Delete">×</button></div>`);
             }
         });
         el.innerHTML = out.join('') || '<div class="more">No directives yet. Use the keys in the listing, or type one above.</div>';
         $('dir-count').textContent = p.directives.length ? `(${p.directives.length})` : '';
+    }
+
+    // Edit directive i in place: its text becomes an input in dis option
+    // syntax. Enter applies, Escape or leaving the field cancels.
+    function editDirective(item, i) {
+        const nm = item && item.querySelector('.nm');
+        const d = S.project.directives[i];
+        if (!nm || !d) return;
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'dir-edit';
+        inp.spellcheck = false;
+        inp.autocomplete = 'off';
+        inp.value = X.directiveString(d);
+        nm.replaceWith(inp);
+        inp.focus();
+        inp.select();
+        let done = false;
+        const cancel = () => {
+            if (done) return;
+            done = true;
+            inp.remove();
+            updateDirectives();
+            updateInspector();
+        };
+        inp.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                cancel();
+                $('listing').focus();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                let nd;
+                try {
+                    nd = X.parseDirectiveLine(inp.value);
+                    if (!nd) throw new Error('Unrecognized directive');
+                } catch (err) {
+                    setStatus(err.message, true);
+                    return;
+                }
+                done = true;
+                inp.blur();
+                inp.remove();
+                commit((p) => { p.directives = p.directives.map((x, j) => (j === i ? nd : x)); },
+                    `Changed to ${X.directiveString(nd)}`);
+            }
+        });
+        inp.addEventListener('blur', () => setTimeout(cancel, 0));
     }
 
     function deleteDirective(i) {
@@ -1100,21 +1209,24 @@
                 g.fillRect(x0 + i, 4, 1, h - 8);
             }
         }
+        // Keep the clean map so the viewport box can be redrawn on scroll.
+        S.mapBase = g.getImageData(0, 0, c.width, c.height);
+        S.mapBaseFor = S.listing;
         drawViewport();
     }
 
     function drawViewport() {
         const c = $('map');
         if (!S.model || !S.mapLayout) return;
-        // Overlay drawn on a second pass each scroll: redraw cheaply by caching
-        // the base image.
-        const g = c.getContext('2d');
-        if (!S.mapBase || S.mapBase.width !== c.width || S.mapBaseFor !== S.listing) {
-            S.mapBase = g.getImageData(0, 0, c.width, c.height);
-            S.mapBaseFor = S.listing;
-        } else {
-            g.putImageData(S.mapBase, 0, 0);
+        // Restore the clean map drawn by drawMap, then draw the box on top.
+        // A stale map (new listing or size) is repainted from scratch.
+        if (!S.mapBase || S.mapBase.width !== c.width || S.mapBase.height !== c.height ||
+            S.mapBaseFor !== S.listing || c.width !== Math.round(c.clientWidth * (window.devicePixelRatio || 1))) {
+            drawMap();
+            return;
         }
+        const g = c.getContext('2d');
+        g.putImageData(S.mapBase, 0, 0);
         const el = $('listing');
         const L = S.listing.lines;
         const first = Math.floor(el.scrollTop / LH);
@@ -1141,14 +1253,18 @@
         g.strokeRect(x0, 1.5, x1 - x0, c.clientHeight - 3);
     }
 
-    function mapHit(x) {
-        if (!S.mapLayout) return null;
-        for (const lay of S.mapLayout) {
-            if (x >= lay.x0 - 1 && x <= lay.x1 + 1) {
-                const len = lay.T.seg.data.length;
-                const off = Math.max(0, Math.min(len - 1, Math.floor((x - lay.x0) / (lay.x1 - lay.x0) * len)));
-                return { s: lay.T.seg.index, a: lay.T.seg.start + off };
-            }
+    // Address under x on the map. With `clamp`, positions left/right of the
+    // strip or in the gaps between segments snap to the nearest byte.
+    function mapHit(x, clamp) {
+        const L = S.mapLayout;
+        if (!L || !L.length) return null;
+        if (clamp) x = Math.max(L[0].x0, Math.min(L[L.length - 1].x1, x));
+        for (const lay of L) {
+            if (x > lay.x1 + 1) continue;
+            if (x < lay.x0 - 1 && !clamp) return null;
+            const len = lay.T.seg.data.length;
+            const off = Math.max(0, Math.min(len - 1, Math.floor((x - lay.x0) / (lay.x1 - lay.x0) * len)));
+            return { s: lay.T.seg.index, a: lay.T.seg.start + off };
         }
         return null;
     }
@@ -1379,9 +1495,11 @@
             const row = e.target.closest('.row');
             if (!row) return;
             const i = +row.dataset.i;
+            const byte = e.target.closest('[data-a]');
+            const pick = byte && !e.shiftKey ? +byte.dataset.a : undefined;
             if (e.button === 2) {
                 const [lo, hi] = selLines();
-                if (i < lo || i > hi) moveTo(i);
+                if (i < lo || i > hi || pick !== undefined) moveTo(i, false, false, pick);
                 return;
             }
             const sym = e.target.closest('[data-k]');
@@ -1392,7 +1510,7 @@
                 return;
             }
             dragging = true;
-            moveTo(i, e.shiftKey);
+            moveTo(i, e.shiftKey, false, pick);
             lst.focus({ preventScroll: true });
         });
         $('rows').addEventListener('mousemove', (e) => {
@@ -1403,11 +1521,19 @@
         addEventListener('mouseup', () => { dragging = false; });
         $('rows').addEventListener('dblclick', (e) => {
             const sym = e.target.closest('[data-k]');
-            if (!sym) return;
-            e.preventDefault();
-            const k = +sym.dataset.k;
-            if (sym.classList.contains('t-lbl')) rename(k);
-            else goKey(k);
+            const byte = e.target.closest('[data-a]');
+            const row = e.target.closest('.row');
+            if (sym && !(byte && sym.classList.contains('t-num'))) {
+                // symbols: follow; label definitions: rename
+                e.preventDefault();
+                const k = +sym.dataset.k;
+                if (sym.classList.contains('t-lbl')) rename(k);
+                else goKey(k);
+            } else if (byte && row) {
+                // a byte: name it (a label in the middle of a dta line)
+                e.preventDefault();
+                rename(X.key(S.listing.lines[+row.dataset.i].s, +byte.dataset.a));
+            }
         });
         $('rows').addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -1420,31 +1546,56 @@
         // map
         const map = $('map');
         let mapDrag = false;
-        const mapGo = (e) => {
-            const r = map.getBoundingClientRect();
-            const hit = mapHit(e.clientX - r.left);
+        const mapGo = (hit) => {
             if (!hit) return;
             const i = lineForKey(X.key(hit.s, hit.a), 'ins');
             if (i >= 0) { moveTo(i); lst.scrollTop = i * LH - lst.clientHeight / 2; draw(); }
         };
-        map.addEventListener('mousedown', (e) => { mapDrag = true; mapGo(e); });
-        map.addEventListener('mousemove', (e) => {
-            const r = map.getBoundingClientRect();
-            const hit = mapHit(e.clientX - r.left);
+        const mapTip = (e, hit) => {
             const tip = $('tip');
-            if (mapDrag && e.buttons & 1) mapGo(e);
-            if (!hit) { tip.hidden = true; return; }
+            if (!hit || !S.model) { tip.hidden = true; return; }
+            const r = map.getBoundingClientRect();
             const l = S.model.labelAt(X.key(hit.s, hit.a));
             tip.textContent = (S.img.multi ? hit.s + ':' : '') + X.h4(hit.a) + (l && !l.off ? ' ' + l.name : '');
             tip.hidden = false;
-            tip.style.left = Math.min(e.clientX + 12, innerWidth - 160) + 'px';
+            tip.style.left = Math.max(0, Math.min(e.clientX + 12, innerWidth - 160)) + 'px';
             tip.style.top = r.bottom + 4 + 'px';
+        };
+        // Pointer capture keeps the drag going when the mouse leaves the strip;
+        // positions outside it clamp to the first or last byte.
+        map.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || !S.model) return;
+            e.preventDefault();
+            try { map.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
+            mapDrag = true;
+            const hit = mapHit(e.clientX - map.getBoundingClientRect().left, true);
+            mapGo(hit);
+            mapTip(e, hit);
         });
-        map.addEventListener('mouseleave', () => { $('tip').hidden = true; });
-        addEventListener('mouseup', () => { mapDrag = false; });
+        map.addEventListener('pointermove', (e) => {
+            if (!S.model) return;
+            const hit = mapHit(e.clientX - map.getBoundingClientRect().left, mapDrag);
+            if (mapDrag) mapGo(hit);
+            mapTip(e, hit);
+        });
+        const mapEnd = (e) => {
+            if (!mapDrag) return;
+            mapDrag = false;
+            if (map.hasPointerCapture(e.pointerId)) map.releasePointerCapture(e.pointerId);
+            const r = map.getBoundingClientRect();
+            if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) $('tip').hidden = true;
+            lst.focus({ preventScroll: true });
+        };
+        map.addEventListener('pointerup', mapEnd);
+        map.addEventListener('pointercancel', mapEnd);
+        map.addEventListener('lostpointercapture', () => { mapDrag = false; });
+        map.addEventListener('pointerleave', () => { if (!mapDrag) $('tip').hidden = true; });
 
         // side panel links (labels, xrefs, directives, segments)
         document.querySelector('.side').addEventListener('click', (e) => {
+            if (e.target.classList.contains('dir-edit')) return;
+            const ed = e.target.closest('[data-edit]');
+            if (ed) return editDirective(ed.closest('.item'), +ed.dataset.edit);
             const del = e.target.closest('[data-del]');
             if (del) return deleteDirective(+del.dataset.del);
             const unsym = e.target.closest('[data-unsym]');
@@ -1462,6 +1613,11 @@
                 const gk = +g.dataset.goto;
                 return goKey(X.keySeg(gk) ? gk : X.key(S.model.finalOwner[X.keyAddr(gk)], X.keyAddr(gk)));
             }
+        });
+        document.querySelector('.side').addEventListener('dblclick', (e) => {
+            const item = e.target.closest('.item');
+            const ed = item && item.querySelector('[data-edit]');
+            if (ed && e.target.closest('.nm')) editDirective(item, +ed.dataset.edit);
         });
         document.querySelector('.side').addEventListener('change', (e) => {
             const t = e.target;
@@ -1595,6 +1751,7 @@
         }
         const nav = { ArrowDown: 1, ArrowUp: -1, PageDown: page, PageUp: -page };
         if (nav[e.key]) { e.preventDefault(); return moveTo(S.cur + nav[e.key], e.shiftKey); }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); return stepByte(e.key === 'ArrowLeft' ? -1 : 1); }
         if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); return moveTo(e.key === 'Home' ? 0 : 1e9, e.shiftKey); }
         if (e.key === 'Enter') { e.preventDefault(); return follow(); }
         if (e.key === 'Escape' || e.key === 'Backspace') { e.preventDefault(); return goBack(false); }

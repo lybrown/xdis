@@ -30,5 +30,18 @@ frame.onload = async () => {
         row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: r.left + 300, clientY: r.top + 8 }));
     }
     if (q.get('key')) w.dispatchEvent(new w.KeyboardEvent('keydown', { key: q.get('key') }));
+    // ?keys=d,ArrowDown,c&scroll=4000: a sequence of keys, then scroll the listing
+    for (const k of (q.get('keys') || '').split(',').filter(Boolean)) {
+        w.dispatchEvent(new w.KeyboardEvent('keydown', { key: k }));
+        await sleep(100);
+    }
+    if (q.get('scroll')) {
+        const lst = w.document.getElementById('listing');
+        for (const y of q.get('scroll').split(',')) {
+            lst.scrollTop = +y;
+            lst.dispatchEvent(new w.Event('scroll'));
+            await sleep(100);
+        }
+    }
 };
 </script>

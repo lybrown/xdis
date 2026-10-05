@@ -195,6 +195,9 @@ main {
 .t-dir { color: var(--dir); }
 .t-note { color: var(--note); font-style: italic; }
 .t-op { color: var(--sym); font-style: italic; }
+.row [data-a] { cursor: pointer; }
+.row [data-a]:hover { text-decoration: underline dotted; }
+.row .bsel { outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 2px; background: var(--sel); }
 .k-seg { border-top: 1px solid var(--border); }
 .k-seg .t-note { color: var(--dim); font-style: normal; }
 
@@ -258,6 +261,7 @@ body.dragging .empty .drop, body.dragging #listing { outline: 3px dashed var(--a
 .list .item .kd { font-size: 10px; color: var(--dim); width: 4em; text-align: right; }
 .list .item .x { color: var(--dim); border: 0; background: none; padding: 0 4px; }
 .list .item .x:hover { color: var(--warn); }
+.list .item .dir-edit { flex: 1; min-width: 0; font: 12px var(--mono); padding: 1px 4px; }
 .list .more { color: var(--dim); padding: 4px; }
 .label-kinds { display: flex; gap: 10px; font-size: 12px; color: var(--dim); }
 .problem { padding: 4px 6px; border-left: 3px solid var(--warn); margin-bottom: 4px; background: var(--bg); font-size: 12px; }

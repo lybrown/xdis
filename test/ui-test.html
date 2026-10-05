@@ -141,6 +141,74 @@ function check(name, ok, detail) {
     check('project round trip', re.bytes.length === S.bytes.length &&
         JSON.stringify(re.project.directives) === JSON.stringify(S.project.directives.map((d) => X.parseDirectiveLine(X.directiveString(d)))));
 
+    // 9b. click a byte in the middle of a dta line and name it
+    const dl = S.listing.lines.findIndex((l) => l.k === 'data' && l.n >= 6 && l.p.filter((p) => p[3] !== undefined).length === l.n);
+    if (dl >= 0) {
+        const DL = S.listing.lines[dl];
+        const mid = DL.a + 3;
+        S.cur = S.anchor = dl;
+        doc.getElementById('listing').scrollTop = dl * 18;
+        w.xdis.sub = null;
+        doc.getElementById('listing').dispatchEvent(new w.Event('scroll'));
+        await sleep(50);
+        const span = doc.querySelector(`.row[data-i="${dl}"] .src [data-a="${mid}"]`);
+        check('dta bytes are clickable', !!span);
+        span.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+        check('click picks the byte', S.sub === mid && doc.querySelector(`.row[data-i="${dl}"] .bsel`) !== null);
+        await sleep(60);
+        check('inspector shows picked byte', doc.querySelector('#tab-inspect .big').textContent.endsWith(X.h4(mid)));
+        key('ArrowRight');
+        check('Right steps to next byte', S.sub === mid + 1);
+        key('ArrowLeft');
+        check('Left steps back', S.sub === mid);
+        key('n');
+        await answer('mid_label');
+        const li = S.listing.lines.findIndex((l) => l.k === 'label' && l.a === mid && l.p[0][1] === 'mid_label');
+        check('label defined mid-line', li >= 0);
+        check('dta line split at the label', S.listing.lines[li + 1].k === 'data' && S.listing.lines[li + 1].a === mid &&
+            S.listing.lines[lineAt(DL.s, DL.a, 'data')].n === 3);
+        check('cursor stays on the named byte', S.listing.lines[S.cur].a === mid);
+    } else {
+        log('skip', 'no plain dta line found');
+    }
+
+    // 9c. edit an existing directive in place
+    doc.querySelector('[data-tab=directives]').click();
+    const di = S.project.directives.findIndex((d) => d.name === 'my_routine');
+    const editBtn = doc.querySelector(`#dir-list [data-edit="${di}"]`);
+    check('directive has edit button', !!editBtn);
+    editBtn.click();
+    const ed = doc.querySelector('#dir-list .dir-edit');
+    check('edit field opens with directive text', ed && /my_routine=(\d+:)?\$/.test(ed.value), ed && ed.value);
+    ed.value = ed.value.replace('my_routine', 'renamed_routine');
+    ed.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await sleep(20);
+    check('edited directive applies', /\brenamed_routine\b/.test(asm()) && !/\bmy_routine\b/.test(asm()));
+    check('edit keeps directive count', S.project.directives.filter((d) => d.name === 'renamed_routine').length === 1);
+    const bad = doc.querySelector(`#dir-list [data-edit="${di}"]`);
+    bad.click();
+    const ed2 = doc.querySelector('#dir-list .dir-edit');
+    ed2.value = 'bogus stuff';
+    ed2.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    check('invalid edit is rejected and stays open', !!doc.querySelector('#dir-list .dir-edit') &&
+        doc.getElementById('status-msg').classList.contains('err'));
+    ed2.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    check('Escape cancels edit', !doc.querySelector('#dir-list .dir-edit'));
+    doc.querySelector('[data-tab=inspect]').click();
+
+    // 9d. memory map is repainted from the current analysis after edits
+    check('map base matches listing', S.mapBaseFor === S.listing);
+    const map = doc.getElementById('map');
+    const mr = map.getBoundingClientRect();
+    map.dispatchEvent(new w.PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: mr.left + 5, clientY: mr.top + 5 }));
+    map.dispatchEvent(new w.PointerEvent('pointermove', { bubbles: true, pointerId: 1, buttons: 1, clientX: mr.right + 300, clientY: mr.bottom + 200 }));
+    const lastSeg = S.model.S[S.model.S.length - 1].seg;
+    const atEnd = S.listing.lines[S.cur];
+    check('map drag past the edge clamps to the end', atEnd.s === lastSeg.index, `seg ${atEnd.s} addr ${X.h4(atEnd.a)}`);
+    map.dispatchEvent(new w.PointerEvent('pointermove', { bubbles: true, pointerId: 1, buttons: 1, clientX: mr.left - 300, clientY: mr.top - 50 }));
+    check('map drag past the start clamps to the start', S.listing.lines[S.cur].s === S.model.S[0].seg.index);
+    map.dispatchEvent(new w.PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: mr.left - 300, clientY: mr.top }));
+
     // 10. context menu offers the actions
     const row = doc.querySelector('.row.cur');
     row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));
