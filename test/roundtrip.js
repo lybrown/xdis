@@ -185,6 +185,12 @@ const cases = [
         ]),
     },
     {
+        // a label switched off in a symbol set is gone, including its effects
+        name: 'symbol-off', type: 'raw', org: 0x2000, directives: ['code $2000'], include: ['symbols/sys.dop'],
+        includeOff: { 'sys.dop': ['SETVBV'] }, expect: ['jsr lE45C', 'lE45C equ $E45C'], absent: ['SETVBV'],
+        bytesFrom: 'setvbv',
+    },
+    {
         // zero page code with a forward reference: xasm needs "z:" or it
         // assembles lda l0085 as absolute
         name: 'zp-forward', type: 'raw', org: 0x80, directives: ['code $80'], expect: ['lda z:l0085'],
@@ -304,7 +310,9 @@ for (const c of cases) {
     }
     if (c.include && c.project) project.includes = [];
     for (const inc of c.include || []) {
-        project.includes.push({ name: path.basename(inc), text: fs.readFileSync(path.join(__dirname, '..', inc), 'utf8') });
+        const name = path.basename(inc);
+        project.includes.push({ name, text: fs.readFileSync(path.join(__dirname, '..', inc), 'utf8'),
+            off: (c.includeOff || {})[name] });
     }
     let type = c.type || X.detectType(file, bytes);
     let org = c.org || 0;

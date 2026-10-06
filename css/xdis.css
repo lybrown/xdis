@@ -400,3 +400,38 @@ dialog .help-grid > :nth-child(odd) { text-align: right; white-space: nowrap; }
 #find-count { min-width: 7ch; text-align: center; font-size: 12px; }
 .row.hit { background: color-mix(in srgb, var(--m-udata) 22%, transparent); }
 .row.hit.cur { background: color-mix(in srgb, var(--m-udata) 45%, var(--cur)); }
+
+/* symbol set viewer */
+.viewsym { margin-left: auto; font-size: 11px; padding: 0 6px; }
+.symview-bar { display: flex; gap: 10px; align-items: center; }
+.symview-bar input[type=search] { flex: 1; }
+.symview { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: 4px; }
+.symview table { font-size: 12px; }
+.symview td { padding: 2px 6px; vertical-align: top; }
+.symview tr.hd td { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding-top: 8px; }
+.symview tr.used td:first-child { color: var(--sym); }
+dialog:has(.symview) { width: min(860px, 94vw); max-width: 94vw; }
+.symview tr.off td:not(:first-child) { opacity: .45; text-decoration: line-through; }
+.symview td.cbcell { width: 2.2em; cursor: pointer; text-align: center; }
+.symview td.cbcell:hover { background: var(--panel2); }
+.symview .symname { cursor: pointer; color: var(--sym); }
+.symview .symname:hover { text-decoration: underline; }
+.symview-bar .spacer { flex: 1; }
+.symview-bar { margin-bottom: 4px; }
+
+/* a bigger clear (x) button in search boxes */
+input[type=search]::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin: -3px -4px -3px 4px;
+    padding: 3px;
+    cursor: pointer;
+    background-color: var(--dim);
+    border-radius: 3px;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 3.5l9 9m0-9l-9 9' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 12px no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 3.5l9 9m0-9l-9 9' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 12px no-repeat;
+}
+input[type=search]::-webkit-search-cancel-button:hover { background-color: var(--fg); }
+#find-close { min-width: 28px; min-height: 24px; font-size: 15px; }

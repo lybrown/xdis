@@ -460,12 +460,17 @@
 
     // Parse a .dop option file. Returns directives, options and unresolved args.
     function parseDop(text, fileName) {
-        const res = { directives: [], options: {}, args: [], errors: [], binary: {} };
+        const res = { directives: [], options: {}, args: [], errors: [], binary: {}, off: {} };
         text.split(/\r?\n/).forEach(function (raw, n) {
             let line = raw;
             const ext = /^\s*;xdis\s+(.*)$/.exec(line);
             if (ext) {
                 line = ext[1];
+                const offm = /^off\s+(\S+)\s+(.*)$/.exec(line);
+                if (offm) {
+                    res.off[offm[1]] = (res.off[offm[1]] || []).concat(offm[2].trim().split(/\s+/));
+                    return;
+                }
                 const opt = /^option\s+(\w+)\s+(\S+)/.exec(line);
                 if (opt) {
                     const v = opt[2];
@@ -522,7 +527,9 @@
         const out = ['; xdis project: ' + ((project.binary && project.binary.name) || '')];
         const o = project.options;
         for (const inc of project.includes || []) {
-            if (inc.enabled !== false) out.push('arg ' + inc.name);
+            if (inc.enabled === false) continue;
+            out.push('arg ' + inc.name);
+            if (inc.off && inc.off.length) out.push(`;xdis off ${inc.name} ${inc.off.join(' ')}`);
         }
         const b = project.binary;
         if (b) {
@@ -2082,7 +2089,9 @@
             if (!inc.parsed) {
                 inc.parsed = parseDop(inc.text, inc.name).directives.map((d) => Object.assign(d, { from: inc.name }));
             }
-            out.push(...inc.parsed);
+            // labels switched off in this set are left out entirely
+            const off = inc.off && inc.off.length ? new Set(inc.off) : null;
+            for (const d of inc.parsed) if (!off || !off.has(d.name)) out.push(d);
         }
         return out;
     }
@@ -2150,6 +2159,7 @@
             includes: (project.includes || []).map((i) => ({
                 name: i.name, enabled: i.enabled !== false, text: i.text,
                 ...(i.custom ? { custom: true } : {}),
+                ...(i.off && i.off.length ? { off: i.off.slice() } : {}),
             })),
             directives: project.directives.map(directiveString),
         };
@@ -2170,6 +2180,7 @@
         }
         project.includes = (p.includes || []).map((i) => ({
             name: i.name, enabled: i.enabled !== false, text: i.text, ...(i.custom ? { custom: true } : {}),
+            ...(Array.isArray(i.off) && i.off.length ? { off: i.off.slice() } : {}),
         }));
         project.directives = (p.directives || []).map((s) => {
             const d = parseDirectiveLine(s);

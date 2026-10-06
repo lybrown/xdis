@@ -1064,6 +1064,135 @@
     }
 
     // ------------------------------------------------------------------
+    // Symbol set viewer: the entries of a .dop with their comments
+
+    function symbolRows(text) {
+        const rows = [];
+        let heading = '';
+        for (const raw of text.split(/\r?\n/)) {
+            const line = raw.replace(/\s+$/, '');
+            const semi = line.indexOf(';');
+            const code = (semi >= 0 ? line.slice(0, semi) : line).trim();
+            const comment = semi >= 0 ? line.slice(semi + 1).trim() : '';
+            if (!code) {
+                // a comment-only line followed by a blank line is a heading
+                if (comment && !/^xdis /.test(comment) && !/=/.test(comment)) heading = comment;
+                continue;
+            }
+            let d = null;
+            try { d = X.parseDirectiveLine(code); } catch (e) { d = null; }
+            if (!d || !d.name) continue;
+            rows.push({ d, comment, heading });
+        }
+        return rows;
+    }
+
+    // Switch labels of a symbol set off (or back on), as one undoable change.
+    function setLabelsOff(setName, names, off) {
+        commit((p) => {
+            let inc = p.includes.find((i) => i.name === setName);
+            if (!inc) {
+                // never enabled: keep the choice for when it is
+                inc = { name: setName, text: SYM.files[setName], enabled: false };
+                p.includes.push(inc);
+                sortIncludes(p);
+            }
+            const cur = new Set(inc.off || []);
+            for (const n of names) {
+                if (off) cur.add(n);
+                else cur.delete(n);
+            }
+            // a new array, so undo snapshots keep the old one
+            const i = p.includes.indexOf(inc);
+            p.includes[i] = Object.assign({}, inc, { off: [...cur] });
+        }, `${off ? 'Switched off' : 'Switched on'} ${names.length === 1 ? names[0] : names.length + ' labels'} in ${setName}`);
+    }
+
+    async function viewSymbols(name) {
+        const incOf = () => S.project.includes.find((i) => i.name === name);
+        const text = (incOf() && incOf().text) || SYM.files[name];
+        if (!text) return setStatus(`No text for ${name}`, true);
+        const rows = symbolRows(text);
+        const filtered = [];
+        const render = (f, onlyUsed) => {
+            const inc = incOf();
+            const on = !!inc && inc.enabled !== false;
+            const off = new Set((inc && inc.off) || []);
+            const used = S.listing ? new Set([...S.listing.used.keys(), ...S.listing.defined]) : new Set();
+            let out = '', last = null;
+            filtered.length = 0;
+            for (const [i, r] of rows.entries()) {
+                const isOff = off.has(r.d.name);
+                const isUsed = on && !isOff && used.has(r.d.name);
+                if (onlyUsed && !isUsed && !isOff) continue;      // keep switched-off rows to turn back on
+                const hay = `${r.d.name} $${X.h4(r.d.addr)} ${X.hx(r.d.addr)} ${r.comment} ${r.heading}`.toLowerCase();
+                if (f && !hay.includes(f)) continue;
+                filtered.push(r);
+                if (r.heading !== last) {
+                    last = r.heading;
+                    if (r.heading) out += `<tr class="hd"><td colspan="5">${esc(r.heading)}</td></tr>`;
+                }
+                const range = r.d.range ? `$${X.h4(r.d.addr)}–$${X.h4(r.d.addr + r.d.range)}` : `$${X.h4(r.d.addr)}`;
+                out += `<tr class="${isUsed ? 'used' : ''}${isOff ? ' off' : ''}" data-symrow="${i}">
+                    <td class="cbcell" data-symcell="${i}" title="${isOff ? 'Switch this label on' : 'Switch this label off'}"><input type="checkbox" data-symon="${i}" ${isOff ? '' : 'checked'}></td>
+                    <td class="mono"><span class="symname" data-symgo="${i}" title="${isUsed ? 'Used in this program — go there' : 'Go there'}">${isUsed ? '● ' : ''}${esc(r.d.name)}</span></td><td class="mono">${range}</td><td class="dim">${r.d.type}</td><td>${esc(r.comment)}</td></tr>`;
+            }
+            const nOff = off.size, nUsed = rows.filter((r) => on && !off.has(r.d.name) && used.has(r.d.name)).length;
+            return {
+                html: out || '<tr><td class="dim" colspan="5">No matches</td></tr>',
+                count: `${filtered.length} shown · ${nUsed} used here · ${nOff} switched off` + (on ? '' : ' · this set is turned off for the project'),
+            };
+        };
+        const body = `<div class="symview-bar"><input type="search" id="sv-filter" placeholder="Filter by name, address or description" autocomplete="off">
+            <label class="dim"><input type="checkbox" id="sv-used"> Only used here or switched off</label></div>
+            <div class="symview-bar"><span class="dim" id="sv-count"></span><span class="spacer"></span>
+            <button class="small" id="sv-off" title="Switch off every label shown">Disable shown</button>
+            <button class="small" id="sv-on" title="Switch on every label shown">Enable shown</button></div>
+            <div class="symview"><table class="seg-table" id="sv-table"></table></div>
+            <p class="dim">A switched-off label is left out completely: no name, and no effect on tracing.</p>`;
+        await dialog(`${name} — ${rows.length} labels`, body, [{ label: 'Close', value: 'ok', primary: true }], (dlg) => {
+            const refresh = () => {
+                const r = render($('sv-filter').value.trim().toLowerCase(), $('sv-used').checked);
+                const box = dlg.querySelector('.symview');
+                const top = box.scrollTop;
+                $('sv-table').innerHTML = r.html;
+                $('sv-count').textContent = r.count;
+                box.scrollTop = top;
+            };
+            $('sv-filter').addEventListener('input', refresh);
+            $('sv-filter').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });
+            $('sv-used').addEventListener('change', refresh);
+            const bulk = (off) => {
+                const names = filtered.map((r) => r.d.name);
+                if (names.length) setLabelsOff(name, names, off);
+                refresh();
+            };
+            $('sv-off').addEventListener('click', (e) => { e.preventDefault(); bulk(true); });
+            $('sv-on').addEventListener('click', (e) => { e.preventDefault(); bulk(false); });
+            // the checkbox column toggles; only the name goes to the label
+            $('sv-table').addEventListener('click', (e) => {
+                const cb = e.target.closest('[data-symon]');
+                const cell = e.target.closest('[data-symcell]');
+                if (cb || cell) {
+                    const i = +(cb ? cb.dataset.symon : cell.dataset.symcell);
+                    const box = cb || cell.querySelector('[data-symon]');
+                    if (!cb) box.checked = !box.checked;       // a click in the cell, beside the box
+                    setLabelsOff(name, [rows[i].d.name], !box.checked);
+                    refresh();
+                    return;
+                }
+                const go = e.target.closest('[data-symgo]');
+                if (!go || !S.model) return;
+                const d = rows[+go.dataset.symgo].d;
+                closeDialog('ok');
+                goKey(X.key(d.seg || S.model.finalOwner[d.addr], d.addr));
+            });
+            refresh();
+            $('sv-filter').focus();
+        });
+    }
+
+    // ------------------------------------------------------------------
     // Dialogs
 
     function dialog(title, bodyHtml, buttons, setup) {
@@ -1279,7 +1408,7 @@
                 out.push([r, pseudoTarget(r) ? pseudoLink(r, 'a') : `<a class="dim" title="entry point from directives">${esc(r)}</a>`]);
             } else {
                 const l = S.model.labelAt(r);
-                const nm = l && !l.off ? l.name : (S.img.multi ? X.keySeg(r) + ':' : '') + X.h4(X.keyAddr(r));
+                const nm = l && !l.off ? l.name : segPre(X.keySeg(r), X.keyAddr(r)) + X.h4(X.keyAddr(r));
                 out.push([nm, `<a data-k="${r}" title="${hexAddr(X.keyAddr(r))}">${esc(nm)}</a>`]);
             }
         }
@@ -1470,13 +1599,18 @@
         for (const [group, files] of Object.entries(SYM.groups)) {
             h += `<div class="opts"><span class="dim">${esc(group)}</span>` + files.map((f) => {
                 const inc = p.includes.find((i) => i.name === f);
-                return `<label><input type="checkbox" data-sym="${esc(f)}" ${inc && inc.enabled !== false ? 'checked' : ''}> ${esc(f)}</label>`;
+                const nOff = inc && inc.off ? inc.off.length : 0;
+                return `<label><input type="checkbox" data-sym="${esc(f)}" ${inc && inc.enabled !== false ? 'checked' : ''}> ${esc(f)}
+                    ${nOff ? `<span class="dim" title="Labels switched off in this set">(${nOff} off)</span>` : ''}
+                    <button class="small viewsym" data-viewsym="${esc(f)}" title="View the labels in ${esc(f)}">view</button></label>`;
             }).join('') + '</div>';
         }
         const custom = p.includes.filter((i) => !builtin.has(i.name));
         if (custom.length) {
             h += '<div class="opts"><span class="dim">Imported</span>' + custom.map((i) =>
                 `<label><input type="checkbox" data-sym="${esc(i.name)}" ${i.enabled !== false ? 'checked' : ''}> ${esc(i.name)}
+                 ${i.off && i.off.length ? `<span class="dim">(${i.off.length} off)</span>` : ''}
+                 <button class="small viewsym" data-viewsym="${esc(i.name)}" title="View the labels in ${esc(i.name)}">view</button>
                  <button class="x small" data-unsym="${esc(i.name)}" title="Remove">×</button></label>`).join('') + '</div>';
         }
         if (S.img && S.img.cartDirectives && S.img.cartDirectives.length) {
@@ -2126,6 +2260,12 @@
                 if (SYM.files[a]) p.includes.push({ name: a, text: SYM.files[a], enabled: true });
                 else problems.push(`arg ${a}: not found — select it together with the .dop, or add it under Directives → Symbol sets`);
             }
+            for (const r of parsed.values()) {
+                for (const [setName, names] of Object.entries(r.off)) {
+                    const i = p.includes.findIndex((x) => x.name === setName);
+                    if (i >= 0) p.includes[i] = Object.assign({}, p.includes[i], { off: [...new Set((p.includes[i].off || []).concat(names))] });
+                }
+            }
             sortIncludes(p);
         }, `Imported ${files.map((f) => f.name).join(', ')}`);
         S.importProblems = problems;
@@ -2321,6 +2461,8 @@
         // side panel links (labels, xrefs, directives, segments)
         document.querySelector('.side').addEventListener('click', (e) => {
             if (e.target.classList.contains('dir-edit')) return;
+            const vs = e.target.closest('[data-viewsym]');
+            if (vs) { e.preventDefault(); return viewSymbols(vs.dataset.viewsym); }
             const dm = e.target.closest('[data-dismiss]');
             if (dm) return dismissSuggestion(S.problems[+dm.dataset.dismiss]);
             const prob = e.target.closest('[data-prob]');

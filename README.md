@@ -85,6 +85,14 @@ Built-in symbol sets (under *Directives*) are the dis option files from
 | `dos.dop` | DOS and SpartaDOS X |
 | `6510.dop`, `vic.dop`, `sid.dop`, `cia.dop` | Commodore 64 |
 
+Each set's *view* button lists its labels with their descriptions, marks the
+ones used by the current program, and lets you switch individual labels off,
+or every label matching a filter with *Disable shown*. A switched-off label
+is left out completely (no name, no effect on tracing). That's useful when a
+program replaces the OS, so `CIOV` and friends at `$E4xx` would otherwise name
+the program's own code. The list is saved in the project and in exported
+`.dop` files as a `;xdis off` line.
+
 When two sets name the same thing, the earlier one wins. Your own imported
 files come first, then `atarixl.dop` (so XL/XE addresses replace 400/800 ones),
 then the rest. Built-in sets always use the current text, even in older
