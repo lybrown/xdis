@@ -435,3 +435,4 @@ input[type=search]::-webkit-search-cancel-button {
 }
 input[type=search]::-webkit-search-cancel-button:hover { background-color: var(--fg); }
 #find-close { min-width: 28px; min-height: 24px; font-size: 15px; }
+.tip.bytetip { white-space: pre; line-height: 1.45; padding: 4px 8px; }

@@ -153,6 +153,12 @@ function check(name, ok, detail) {
         await sleep(50);
         const span = doc.querySelector(`.row[data-i="${dl}"] .src [data-a="${mid}"]`);
         check('dta bytes are clickable', !!span);
+        span.dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));
+        const tip = doc.getElementById('tip'), v = S.model.segOf(X.key(DL.s, mid)).seg.data[mid - S.model.segOf(X.key(DL.s, mid)).seg.start];
+        check('hovering a byte shows its values', !tip.hidden && tip.textContent.includes('$' + X.h2(v) + '  ' + v) &&
+            tip.textContent.includes('opcode: ' + X.OPS[v].mn), tip.textContent);
+        span.dispatchEvent(new w.MouseEvent('mouseout', { bubbles: true }));
+        check('leaving the byte hides the tip', tip.hidden);
         span.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
         check('click picks the byte', S.sub === mid && doc.querySelector(`.row[data-i="${dl}"] .bsel`) !== null);
         await sleep(60);

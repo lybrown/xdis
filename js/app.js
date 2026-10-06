@@ -1193,6 +1193,46 @@
     }
 
     // ------------------------------------------------------------------
+    // Byte tips: hex, decimal, binary, character and opcode of a byte
+
+    const MODE_TEXT = {
+        imp: '', acc: '@', imm: '#imm', zp: 'zp', zpx: 'zp,x', zpy: 'zp,y', izx: '(zp,x)', izy: '(zp),y',
+        abs: 'abs', abx: 'abs,x', aby: 'abs,y', ind: '(abs)', rel: 'rel',
+    };
+
+    function byteTipText(T, a) {
+        const v = T.seg.data[a - T.seg.start];
+        const op = X.OPS[v];
+        const ch = v >= 0x20 && v < 0x7F ? ` '${String.fromCharCode(v)}'` : '';
+        const signed = v >= 0x80 ? ` (${v - 256})` : '';
+        const opText = (op.mn + ' ' + MODE_TEXT[op.mode]).trim() + (op.jam ? ' (locks up the CPU)' : op.illegal ? ' (undocumented)' : '');
+        return [
+            `${segPre(T.seg.index, a)}$${X.h4(a)}`,
+            `$${X.h2(v)}  ${v}${signed}  %${v.toString(2).padStart(8, '0')}${ch}`,
+            `opcode: ${opText}`,
+        ].join('\n');
+    }
+
+    function showByteTip(el, T, a) {
+        const tip = $('tip');
+        tip.textContent = byteTipText(T, a);
+        tip.classList.add('bytetip');
+        tip.hidden = false;
+        const r = el.getBoundingClientRect();
+        const w = tip.offsetWidth, h = tip.offsetHeight;
+        tip.style.left = Math.max(4, Math.min(r.left, innerWidth - w - 4)) + 'px';
+        tip.style.top = (r.bottom + 4 + h > innerHeight ? r.top - h - 4 : r.bottom + 4) + 'px';
+    }
+
+    function hideByteTip() {
+        const tip = $('tip');
+        if (tip.classList.contains('bytetip')) {
+            tip.hidden = true;
+            tip.classList.remove('bytetip');
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Dialogs
 
     function dialog(title, bodyHtml, buttons, setup) {
@@ -2402,6 +2442,22 @@
                 rename(X.key(S.listing.lines[+row.dataset.i].s, +byte.dataset.a));
             }
         });
+        // hovering a byte shows its value in several forms
+        $('rows').addEventListener('mouseover', (e) => {
+            const el = e.target.closest('[data-a]');
+            const row = el && e.target.closest('.row');
+            if (!el || !row || !S.model) return;
+            const ln = S.listing.lines[+row.dataset.i];
+            const a = +el.dataset.a;
+            const T = S.model.segOf(X.key(ln.s, a));
+            if (!T || a < T.seg.start || a > T.seg.end) return;
+            showByteTip(el, T, a);
+        });
+        $('rows').addEventListener('mouseout', (e) => {
+            if (e.target.closest('[data-a]') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('[data-a]') === e.target.closest('[data-a]'))) hideByteTip();
+        });
+        $('listing').addEventListener('scroll', hideByteTip, { passive: true });
+
         $('rows').addEventListener('contextmenu', (e) => {
             e.preventDefault();
             const sym = e.target.closest('[data-k]');
@@ -2423,6 +2479,7 @@
             if (!hit || !S.model) { tip.hidden = true; return; }
             const r = map.getBoundingClientRect();
             const l = S.model.labelAt(X.key(hit.s, hit.a));
+            tip.classList.remove('bytetip');
             tip.textContent = segPre(hit.s, hit.a) + X.h4(hit.a) + (l && !l.off ? ' ' + l.name : '');
             tip.hidden = false;
             tip.style.left = Math.max(0, Math.min(e.clientX + 12, innerWidth - 160)) + 'px';

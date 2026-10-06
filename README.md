@@ -152,6 +152,9 @@ All of these are also available in the right-click menu and in the
 *Inspect* panel. The inspector also shows callers, accessors and the
 directives that apply at the cursor. The memory map strip above the listing
 shows code, data, text and pointers; click it to jump.
+Hover over any byte to see its address, its value in hex, decimal (signed
+too, from `$80`), binary and as a character, and the instruction it would
+be as an opcode.
 
 Directives that are not needed to get the current split between code and data
 are tagged *no effect*, *name only* (a plain label would do) or *format only*
