@@ -191,6 +191,19 @@ const cases = [
         bytesFrom: 'setvbv',
     },
     {
+        // BBC Micro: OS calls, a VIA register and MOS workspace by name
+        name: 'bbc', type: 'raw', org: 0x1900, directives: ['code $1900'],
+        include: ['symbols/bbcmos.dop', 'symbols/bbchw.dop'],
+        expect: ['jsr OSWRCH', 'jsr OSBYTE', 'sta system_via_ier', 'lda interruptAccumulator', 'OSWRCH equ $FFEE'],
+        bytes: Uint8Array.from([
+            0xA9, 0x41, 0x20, 0xEE, 0xFF,   // lda #'A' / jsr OSWRCH
+            0xA9, 0x81, 0xA2, 0x00, 0xA0, 0xFF, 0x20, 0xF4, 0xFF,   // OSBYTE &81
+            0xA9, 0x7F, 0x8D, 0x4E, 0xFE,   // sta system VIA IER
+            0xA5, 0xFC,                     // lda &FC
+            0x60,
+        ]),
+    },
+    {
         // zero page code with a forward reference: xasm needs "z:" or it
         // assembles lda l0085 as absolute
         name: 'zp-forward', type: 'raw', org: 0x80, directives: ['code $80'], expect: ['lda z:l0085'],
@@ -219,6 +232,12 @@ const cases = [
             0xEA, 0x60,             // 2030 after the block
         ]),
     },
+    // a 64K BBC Micro memory dump (Ransack, with MOS 1.20 and BASIC), traced
+    // from the IRQ1V vector and the call chain left on the stack
+    { name: 'ransack-bbc', file: 'ransack/ransack-main.mem', type: 'raw', org: 0,
+      directives: ['code $1CD1', 'code $240D', 'code $131A', 'code $112C'],
+      include: ['symbols/bbcmos.dop', 'symbols/bbchw.dop'],
+      expect: ['lda user_via_ifr', 'jsr OSBYTE', 'Callers: -v 0204'] },
     { name: 'selftest-like', file: 'ransack/RANFIX.MEM', type: 'raw', org: 0x2000,
       directives: ['code start=$2000'] },
 ];
