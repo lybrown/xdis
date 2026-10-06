@@ -85,6 +85,31 @@ const cases = [
         bytes: Uint8Array.from([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
             0xA9, 0x00, 0x8D, 0x20, 0xD0, 0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0x60]),
     },
+    // inline data after jsr: a print routine that pops its return address,
+    // prints up to a byte with bit 7 set and jumps to that byte
+    ...(() => {
+        const stub = [0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0];
+        const bytes = Uint8Array.from(stub.concat([
+            0x20, 0x15, 0x08, 0x48, 0x49, 0xA9, 0x00, 0x60,             // jsr print / "HI" / lda #0 / rts
+            0x68, 0x85, 0xFB, 0x68, 0x85, 0xFC, 0xA0, 0x00,             // print: pla sta $FB pla sta $FC ldy #0
+            0xE6, 0xFB, 0xD0, 0x02, 0xE6, 0xFC,                         // loop: inc $FB bne +2 inc $FC
+            0xB1, 0xFB, 0x30, 0x06, 0x20, 0xD2, 0xFF, 0x4C, 0x1D, 0x08, // lda ($FB),y bmi out jsr $FFD2 jmp loop
+            0x6C, 0xFB, 0x00]));                                         // out: jmp ($FB)
+        return [
+            { name: 'inline-suggest', type: 'prg', bytes, problems: [/l0815 pulls its return address/] },
+            { name: 'inline-bit7', type: 'prg', bytes, pointers: true, expect: ["dta c'HI'", 'lda #$00'] },
+        ];
+    })(),
+    {
+        // inline zero-terminated text, a fixed byte count and bit-7-last text
+        name: 'inline-modes', type: 'prg', directives: ['inline $081E zero', 'inline $081F 2', 'inline $0820 bit7last'],
+        expect: ["dta c'AB',$00", 'dta $34,$12', "dta c'O',$CB"],
+        bytes: Uint8Array.from([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
+            0x20, 0x1E, 0x08, 0x41, 0x42, 0x00,                         // jsr zr / "AB",0
+            0x20, 0x1F, 0x08, 0x34, 0x12,                               // jsr fx / $1234
+            0x20, 0x20, 0x08, 0x4F, 0xCB, 0x60,                         // jsr bl / "OK" with bit 7 / rts
+            0x60, 0x60, 0x60]),                                         // zr, fx, bl
+    },
     // project files; `relocate` applies the relocations xdis suggests
     { name: 'galaxian', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true,
       expect: ['org r:$A000', 'jmp lA000'] },

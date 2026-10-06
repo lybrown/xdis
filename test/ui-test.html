@@ -305,6 +305,33 @@ function check(name, ok, detail) {
     check('context menu opens', !ctx.hidden && ctx.querySelectorAll('.mi').length >= 10, ctx.querySelectorAll('.mi').length + ' items');
     ctx.hidden = true;
 
+    // 10. inline data after calls, from the context menu on a jsr
+    const ji = S.listing.lines.findIndex((l) => l.k === 'ins' && /^jsr$/.test(l.p[1] && l.p[1][1]) && l.p.some((p) => p[2] !== undefined && X.keySeg(p[2])));
+    if (ji >= 0) {
+        S.cur = S.anchor = ji;
+        doc.getElementById('listing').scrollTop = ji * 18;
+        doc.getElementById('listing').dispatchEvent(new w.Event('scroll'));
+        await sleep(50);
+        doc.querySelector('.row.cur').dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 200 }));
+        const imi = ctx.querySelector('.mi[data-a=inline]');
+        check('context menu offers inline data on a jsr', !!imi);
+        const nDirs = S.project.directives.length;
+        imi.click();
+        await sleep(30);
+        check('inline dialog opens', doc.getElementById('dlg').open && !!doc.querySelector('#dlg input[name=im][value=zero]'));
+        doc.querySelector('#dlg input[name=im][value=zero]').click();
+        doc.querySelector('#dlg input[name=im][value=zero]').dispatchEvent(new w.Event('input', { bubbles: true }));
+        check('inline dialog previews the directive', /^inline \S+ zero$/.test(doc.getElementById('im-dir').textContent), doc.getElementById('im-dir').textContent);
+        doc.querySelector('#dlg button[value=ok]').click();
+        await sleep(50);
+        const nd = S.project.directives[S.project.directives.length - 1];
+        check('inline directive added', S.project.directives.length === nDirs + 1 && nd.type === 'inline' && nd.mode === 'zero');
+        key('z', { ctrlKey: true });
+        check('inline directive undoable', S.project.directives.length === nDirs);
+    } else {
+        log('skip', 'no jsr found');
+    }
+
     // 10a. find in the source
     key('f', { ctrlKey: true });
     const fbar = doc.getElementById('findbar'), fin = doc.getElementById('find-input');

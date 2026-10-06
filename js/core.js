@@ -349,11 +349,19 @@
     // carried through .dop files as ";xdis ..." comment lines.
 
     const CLI_TYPES = ['code', 'data', 'vector', 'constant', 'address', 'codeptr'];
-    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss'];
+    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss', 'inline'];
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
-    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1, bank: 1 };
+    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1, bank: 1, inline: 1 };
+    // Inline data after a jsr: how the called routine finds its end and
+    // where execution continues.
+    const INLINE_MODES = {
+        bit7: 'text up to a byte with bit 7 set; that byte is the next instruction',
+        bit7last: 'text whose last byte has bit 7 set; continues after it',
+        zero: 'text ending in a zero byte; continues after it',
+    };
+    const inlineModeOk = (m) => m in INLINE_MODES || (/^\d+$/.test(m) && +m >= 1 && +m <= 255);
 
     const ALIASES = {
         c: 'code', d: 'data', C: 'constant', v: 'vector', A: 'address',
@@ -403,6 +411,7 @@
     function directiveString(d) {
         if (d.type === 'relocate') return `relocate ${specString(d)} $${hx(d.run)}`;
         if (d.type === 'bank') return `bank ${specString(d)} ${d.bank}`;
+        if (d.type === 'inline') return `inline ${specString(d)} ${d.mode}`;
         if (d.type === 'hi' || d.type === 'lo') return `${d.type} ${specString(d)}${d.target !== undefined ? ' $' + hx(d.target) : ''}`;
         if (d.type === 'comment' || d.type === 'note' || d.type === 'operand') {
             const loc = (d.seg ? segText(d.seg) + ':' : '') + '$' + hx(d.addr);
@@ -438,6 +447,17 @@
             if (!r) throw new Error(`Bad bank: ${m[2]} (expected e.g. bank b7:$A456 5)`);
             const d = parseSpec(type, r[1]);
             d.bank = parseInt(r[2], 10);
+            return d;
+        }
+        if (type === 'inline') {
+            // inline [name=][seg:]$ROUTINE MODE: each jsr to ROUTINE is
+            // followed by inline data; MODE is bit7, bit7last, zero or a
+            // byte count
+            const r = /^(\S+)\s+(\w+)$/.exec(m[2]);
+            if (!r || !inlineModeOk(r[2])) throw new Error(`Bad inline: ${m[2]} (expected e.g. inline $865C bit7; modes: ${Object.keys(INLINE_MODES).join(', ')} or a byte count)`);
+            const d = parseSpec(type, r[1]);
+            if (d.hi !== undefined || d.range) throw new Error('inline takes a single routine address');
+            d.mode = r[2];
             return d;
         }
         if (type === 'hi' || type === 'lo') {
@@ -815,6 +835,39 @@
             }
             bankOv.set(key(resolveSeg(d, d.addr), d.addr), d.bank + 1);
         }
+        // inline directives: routines followed by inline data at each jsr
+        const inlineAt = new Map();
+        for (const d of directives) {
+            if (d.type === 'inline' && inlineModeOk(d.mode)) inlineAt.set(key(resolveSeg(d, d.addr), d.addr), d);
+        }
+        // Mark the inline data after a jsr at `at` and return where execution
+        // continues, or -1.
+        function inlineData(cs, at, d) {
+            const a0 = at + 3;
+            const n = /^\d+$/.test(d.mode) ? +d.mode : 0;
+            let a = a0;
+            for (;; a++) {
+                if (n && a - a0 === n) break;
+                const sg = a <= 0xFFFF ? segAt(cs, a) : 0;
+                if (sg <= 0 || a - a0 > 255) {
+                    warn(`The inline data after jsr ${d.name || '$' + h4(d.addr)} at $${h4(at)} ` +
+                        (sg <= 0 ? 'runs into memory that is not loaded' : 'has no end within 256 bytes'), key(owner[at], at), d);
+                    return -1;
+                }
+                const b = byteAt(sg, a);
+                if (!n && (d.mode === 'zero' ? b === 0 : b >= 0x80)) {
+                    if (d.mode !== 'bit7') a++;
+                    break;
+                }
+            }
+            for (let x = a0; x < a; x++) {
+                const T = S[segAt(cs, x) - 1];
+                const o = x - T.seg.start;
+                if (!T.fmt[o]) T.fmt[o] = n ? FMT.data : FMT.text;
+            }
+            return a;
+        }
+
         // a bank select by instruction op at address t ($D5xx)
         function select(st, op, t) {
             const set = (list) => { for (const [w, sg] of list) st.w[w] = sg; };
@@ -924,6 +977,17 @@
                         addRef(tk, 'callers', fromKey);
                         work.push([t, into()]);
                         if (cs && op.mn === 'jsr') cs = { w: cs.w.slice(), a: null, x: null, y: null };
+                        if (op.mn === 'jsr' && inlineAt.has(tk)) {
+                            // the routine returns past its inline data
+                            const r = inlineData(cs, i, inlineAt.get(tk));
+                            if (r >= 0 && r <= 0xFFFF) {
+                                const rk = key(segAt(cs, r) > 0 ? segAt(cs, r) : owner[r], r);
+                                need.add(rk);
+                                addRef(rk, 'callers', fromKey);
+                                work.push([r, cs]);
+                            }
+                            break;
+                        }
                     } else if (t >= 0) {
                         addRef(tk, 'access', fromKey);
                     }
@@ -1183,6 +1247,52 @@
 
         for (const sg of findPointerPairs().filter(keep)) {
             warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir });
+        }
+        for (const sg of findInlineRoutines().filter(keep)) {
+            warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir });
+        }
+
+        // Find routines called with inline data after the jsr: they pull
+        // their return address into a pointer and read through it,
+        //   pla / sta P / pla / sta P+1 ... lda (P),y / bmi|bpl|beq|bne
+        // and guess how the data ends from the test and from how they return.
+        function findInlineRoutines() {
+            const out = [];
+            const isJsr = (c) => typeof c === 'number' && segOf(c) &&
+                segOf(c).seg.data[keyAddr(c) - segOf(c).seg.start] === 0x20 && isCodeStart(c);
+            for (const T of S) {
+                const ins = instructionsOf(T);
+                for (let j = 0; j + 3 < ins.length; j++) {
+                    const [p1, s1, p2, s2] = ins.slice(j, j + 4);
+                    if (p1.op.mn !== 'pla' || p2.op.mn !== 'pla' || s1.op.mn !== 'sta' || s2.op.mn !== 'sta' ||
+                        s1.op.mode !== 'zp' || s2.op.mode !== 'zp' || s2.lo !== s1.lo + 1) continue;
+                    // contiguous instructions only
+                    if (s1.a !== p1.a + 1 || p2.a !== s1.a + 2 || s2.a !== p2.a + 1) continue;
+                    const k = key(T.seg.index, p1.a);
+                    const r = refs.get(k);
+                    if (inlineAt.has(k) || !r || !r.callers.some(isJsr)) continue;
+                    const P = s1.lo;
+                    let mode = null, jmpInd = false;
+                    for (let n = j + 4; n < Math.min(ins.length, j + 64); n++) {
+                        const x = ins[n];
+                        if (x.op.mn === 'jmp' && x.op.mode === 'ind' && x.w === P) jmpInd = true;
+                        if (!mode && x.op.mn === 'lda' && (x.op.mode === 'izy' || x.op.mode === 'izx') && x.lo === P && ins[n + 1]) {
+                            const b = ins[n + 1].op.mn;
+                            mode = b === 'bmi' || b === 'bpl' ? 'bit7' : b === 'beq' || b === 'bne' ? 'zero' : null;
+                        }
+                    }
+                    if (!mode) continue;
+                    if (mode === 'bit7' && !jmpInd) mode = 'bit7last';
+                    const l = labelAt(k);
+                    out.push({
+                        at: k,
+                        dir: { type: 'inline', name: null, seg: cover[p1.a] > 1 ? T.seg.index : 0, addr: p1.a, range: 0, mode },
+                        msg: `${l ? l.name : '$' + h4(p1.a)} pulls its return address and reads the bytes after the jsr: ` +
+                            `probably inline ${mode === 'zero' ? 'text ending in a zero byte' : 'text'} after each call — click to review`,
+                    });
+                }
+            }
+            return out;
         }
 
         // Find pairs of immediates that are the two halves of one address:
@@ -1891,7 +2001,7 @@
         if (ln.u) cm.push(ln.u.replace(/\n/g, ' '));
         if (!cm.length) return src;
         if (ln.k === 'label') {
-            src += '\t'.repeat((3 - (src.length >> 3)) || 1);
+            src += '\t'.repeat(Math.max(1, 3 - (src.length >> 3)));
             return src + '; ' + cm.join(' ');
         }
         return src + '\t\t; ' + cm.join(' ');

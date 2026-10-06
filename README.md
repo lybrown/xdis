@@ -182,6 +182,25 @@ and page copies through zero page pointers such as `lda (p),y` / `sta (q),y`)
 whose destination is later called or jumped to. It lists each one in Problems
 as a suggestion; click it to review and apply the relocation.
 
+Inline data after calls
+-----------------------
+
+Some routines take their arguments from the bytes after the `jsr`. They pull
+the return address off the stack, read through it, and continue past the data.
+An `inline` directive on the routine tells the tracer how to find the end of
+the data at every call:
+
+    inline $865C bit7       ; text up to a byte with bit 7 set, which is the next instruction
+    inline $865C bit7last   ; text whose last byte has bit 7 set; continues after it
+    inline $865C zero       ; text ending in a zero byte; continues after it
+    inline $865C 2          ; a fixed number of bytes (1-255)
+
+The data after each call becomes `dta`, and tracing continues where the routine
+returns. Choose *Inline data after calls…* from the right-click menu on a `jsr`
+or on the routine itself. Routines that start with `pla` / `sta P` / `pla` /
+`sta P+1` and then read `(P),y` are suggested in Problems. The test after the
+read (`bmi` or `beq`) and a final `jmp (P)` suggest which form applies.
+
 Pointers in immediates
 ----------------------
 

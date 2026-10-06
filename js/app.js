@@ -97,9 +97,11 @@
         startScan();
         if (opt.keepView === false) {
             const sug = S.model.warnings.filter((w) => w.suggest);
-            const nr = sug.filter((w) => w.suggest.type === 'relocate').length, np = sug.length - nr;
+            const nr = sug.filter((w) => w.suggest.type === 'relocate').length;
+            const ni = sug.filter((w) => w.suggest.type === 'inline').length, np = sug.length - nr - ni;
             const parts = [];
             if (nr) parts.push(`${nr} relocated code block${nr > 1 ? 's' : ''}`);
+            if (ni) parts.push(`${ni} routine${ni > 1 ? 's' : ''} with inline data`);
             if (np) parts.push(`${np} likely pointer${np > 1 ? 's' : ''}`);
             if (parts.length) setTimeout(() => setStatus(`Found ${parts.join(' and ')} — see Problems`), 0);
         }
@@ -580,6 +582,7 @@
         targetbank: { label: 'Target bank…', key: '' },
         hibyte: { label: 'High byte of an address (#>)…', key: '>' },
         lobyte: { label: 'Low byte of an address (#<)…', key: '<' },
+        inline: { label: 'Inline data after calls…', key: '' },
     };
 
     function collapse() {
@@ -633,6 +636,10 @@
             case 'targetbank': return inBankWindow(ln) ? chooseBank(ln.s, ln.a) : setStatus('The operand is not in a cartridge bank window', true);
             case 'hibyte': return editHalf(ln, 'hi');
             case 'lobyte': return editHalf(ln, 'lo');
+            case 'inline': {
+                const rk = inlineRoutine(ln);
+                return rk === null ? setStatus('Not a jsr or the start of a routine', true) : inlineDialog(rk);
+            }
         }
     }
 
@@ -786,6 +793,68 @@
             p.directives = p.directives.filter((d) => !(d.type === 'bank' && d.addr === addr && (d.seg || 0) === sc));
             if (b !== null) p.directives.push({ type: 'bank', name: null, seg: sc, addr, range: 0, bank: b });
         }, b === null ? `Removed the bank at $${X.h4(addr)}` : `The operand at $${X.h4(addr)} is in bank ${b}`);
+    }
+
+    // The routine an inline directive would be about from line ln: the
+    // target of a jsr, or the routine starting there. Null if neither.
+    function inlineRoutine(ln) {
+        if (!ln || ln.k !== 'ins' || !ln.s) return null;
+        const T = S.model.S[ln.s - 1];
+        if (T.seg.data[ln.a - T.seg.start] === 0x20) {
+            const t = ln.p.find((p) => p[2] !== undefined);
+            if (t && X.keySeg(t[2])) return t[2];
+        }
+        const k = X.key(ln.s, ln.a);
+        const r = S.model.refs.get(k);
+        return r && r.callers.length ? k : null;
+    }
+
+    const INLINE_CHOICES = [
+        ['bit7', 'Text up to a byte with bit 7 set, which is the next instruction'],
+        ['bit7last', 'Text whose last byte has bit 7 set; continues after it'],
+        ['zero', 'Text ending in a zero byte; continues after it'],
+    ];
+
+    // Say how the routine at key rk finds its inline data after each jsr.
+    async function inlineDialog(rk, problem) {
+        const seg = X.keySeg(rk), addr = X.keyAddr(rk);
+        const sc = scopeSeg(seg, addr);
+        const same = (d) => d.type === 'inline' && d.addr === addr && (d.seg || 0) === sc;
+        const cur = S.project.directives.find(same);
+        let mode = problem ? problem.suggest.mode : cur ? cur.mode : 'bit7';
+        const l = S.model.labelAt(rk);
+        const name = l && !l.off ? l.name : '$' + X.h4(addr);
+        const fixed = /^\d+$/.test(mode);
+        const body = `${problem ? `<p>${esc(problem.msg.replace(/ — click.*/, ''))}.</p>` : ''}
+            <p>Each <code>jsr ${esc(name)}</code> is followed by data that ${esc(name)} skips when it returns:</p>
+            <div class="opts">
+            ${INLINE_CHOICES.map(([m, t]) => `<label><input type="radio" name="im" value="${m}" ${mode === m ? 'checked' : ''}> ${esc(t)}</label>`).join('')}
+            <label><input type="radio" name="im" value="n" ${fixed ? 'checked' : ''}> A fixed number of bytes:
+                <input type="number" id="im-n" min="1" max="255" value="${fixed ? mode : 2}" style="width:5em"></label>
+            ${cur ? '<label><input type="radio" name="im" value=""> None: an ordinary routine</label>' : ''}</div>
+            <p class="dim">Adds <code id="im-dir"></code></p>`;
+        const dirFor = (m) => ({ type: 'inline', name: null, seg: sc, addr, range: 0, mode: m });
+        let pick = mode;
+        const btn = await dialog('Inline data after calls', body,
+            (problem ? [{ label: 'Dismiss', value: 'dismiss' }] : []).concat(
+                [{ label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]), (dlg) => {
+                const upd = () => {
+                    const r = dlg.querySelector('input[name=im]:checked');
+                    const n = Math.max(1, Math.min(255, +$('im-n').value || 1));
+                    pick = !r ? mode : r.value === 'n' ? String(n) : r.value;
+                    $('im-dir').textContent = pick ? X.directiveString(dirFor(pick)) : '(removes the inline directive)';
+                };
+                dlg.querySelectorAll('input').forEach((x) => x.addEventListener('input', upd));
+                $('im-n').addEventListener('focus', () => { dlg.querySelector('input[value=n]').checked = true; upd(); });
+                upd();
+                dlg.querySelector('button[value=ok]').focus();
+            });
+        if (btn === 'dismiss') return dismissSuggestion(problem);
+        if (btn !== 'ok') return;
+        commit((p) => {
+            p.directives = p.directives.filter((d) => !same(d));
+            if (pick) p.directives.push(dirFor(pick));
+        }, pick ? `Added ${X.directiveString(dirFor(pick))}` : `${name} has no inline data`);
     }
 
     // Is the operand of instruction line ln in a cartridge bank window?
@@ -1383,6 +1452,7 @@
             items.push(mi('constant', ACTIONS.constant.label, 'K'));
         }
         if (inBankWindow(ln)) items.push(mi('targetbank', ACTIONS.targetbank.label, ''));
+        if (inlineRoutine(ln) !== null) items.push(mi('inline', ACTIONS.inline.label, ''));
         if (halfByte(ln) !== null) {
             items.push(mi('hibyte', ACTIONS.hibyte.label, '>'));
             items.push(mi('lobyte', ACTIONS.lobyte.label, '<'));
@@ -1845,10 +1915,10 @@
         // real problems first, then suggestions
         uniq.sort((x, y) => !!x.suggest - !!y.suggest);
         S.problems = uniq;
-        const ptrs = uniq.filter((p) => p.suggest && p.suggest.type !== 'relocate').length;
+        const ptrs = uniq.filter((p) => p.suggest && p.suggest.type !== 'relocate' && p.suggest.type !== 'inline').length;
         const allBtn = ptrs > 1 ? `<p><button id="btn-apply-ptrs" title="Show every suggested pair of immediates as an address">Apply all ${ptrs} pointer suggestions</button></p>` : '';
         $('problem-list').innerHTML = allBtn + uniq.slice(0, 500).map((p, i) => {
-            const where = p.bankFix ? 'Choose the bank' : p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
+            const where = p.bankFix ? 'Choose the bank' : p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : p.suggest.type === 'inline' ? 'Review the inline data' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
                 p.extra ? 'Go to the corrupted data' : '';
             const dismiss = p.suggest ? `<button class="x dismiss" data-dismiss="${i}" title="Dismiss this suggestion (adds a dismiss directive)">×</button>` : '';
             return `<div class="problem${where ? ' link' : ''}${p.suggest ? ' suggest' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${dismiss}${esc(p.msg)}</div>`;
@@ -1925,7 +1995,7 @@
     }
 
     function applyAllPointerSuggestions() {
-        const list = (S.problems || []).filter((p) => p.suggest && p.suggest.type !== 'relocate').map((p) => p.suggest);
+        const list = (S.problems || []).filter((p) => p.suggest && p.suggest.type !== 'relocate' && p.suggest.type !== 'inline').map((p) => p.suggest);
         if (!list.length) return;
         commit((pr) => { pr.directives = pr.directives.concat(list); }, `Added ${list.length} pointer directives`);
     }
@@ -1940,6 +2010,7 @@
         if (p.suggest) {
             goKey(p.k);
             if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest, p);
+            else if (p.suggest.type === 'inline') inlineDialog(p.k, p);
             else if (p.suggest.type === 'hi' || p.suggest.type === 'lo') halfSuggestion(p);
             else pointerSuggestion(p);
             return;
