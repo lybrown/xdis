@@ -554,6 +554,7 @@
         $('btn-redo').disabled = !S.redo.length;
         const has = !!S.model;
         for (const id of ['btn-save-proj', 'btn-export-dop', 'btn-save-asm', 'btn-import-dop']) $(id).disabled = !has && id !== 'btn-import-dop';
+        $('btn-save-bin').disabled = !S.bytes;
     }
 
     // ------------------------------------------------------------------
@@ -651,7 +652,7 @@
     };
 
     // Relocate the selection (or offer to undo the relocation the cursor is in).
-    async function relocateDialog(r, preset) {
+    async function relocateDialog(r, preset, problem) {
         const piece = !preset && curPiece();
         if (piece) {
             const n = piece.data.length;
@@ -676,7 +677,8 @@
             <div class="field"><label>Runs at (hex)</label><input type="text" id="rl-run" value="${run !== null ? '$' + X.h4(run) : ''}" placeholder="e.g. $A000"></div>
             <div id="dlg-err" class="problem" hidden></div>`;
         const btn = await dialog(preset ? 'Relocate suggested block' : 'Relocate code', body,
-            [{ label: 'Cancel', value: 'cancel' }, { label: 'Relocate', value: 'ok', primary: true }], (dlg) => {
+            (problem ? [{ label: 'Dismiss', value: 'dismiss' }] : []).concat(
+                [{ label: 'Cancel', value: 'cancel' }, { label: 'Relocate', value: 'ok', primary: true }]), (dlg) => {
                 const focus = $(run === null ? 'rl-run' : 'rl-lo');
                 focus.focus();
                 focus.select();
@@ -700,6 +702,7 @@
                     });
                 }
             });
+        if (btn === 'dismiss') return dismissSuggestion(problem);
         if (btn !== 'ok' || !res) return;
         const seg = preset ? preset.seg : scopeSeg(r.seg, res.lo);
         const d = { type: 'relocate', name: null, seg, addr: res.lo, range: res.hi - res.lo, run: res.run };
@@ -1585,7 +1588,8 @@
         $('problem-list').innerHTML = allBtn + uniq.slice(0, 500).map((p, i) => {
             const where = p.bankFix ? 'Choose the bank' : p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
                 p.extra ? 'Go to the corrupted data' : '';
-            return `<div class="problem${where ? ' link' : ''}${p.suggest ? ' suggest' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${esc(p.msg)}</div>`;
+            const dismiss = p.suggest ? `<button class="x dismiss" data-dismiss="${i}" title="Dismiss this suggestion (adds a dismiss directive)">×</button>` : '';
+            return `<div class="problem${where ? ' link' : ''}${p.suggest ? ' suggest' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${dismiss}${esc(p.msg)}</div>`;
         }).join('') || '<div class="more">No problems.</div>';
         const nSug = uniq.filter((p) => p.suggest).length;
         const c = $('problem-count');
@@ -1620,7 +1624,7 @@
             <label><input type="radio" name="pt" value="address" ${type === 'address' ? 'checked' : ''}> Data pointer</label></div>
             <p class="dim">Adds <code id="ps-dir">${esc(X.directiveString(d))}</code></p>`;
         const btn = await dialog('Show as an address', body,
-            [{ label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }], (dlg) => {
+            [{ label: 'Dismiss', value: 'dismiss' }, { label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }], (dlg) => {
                 for (const r of dlg.querySelectorAll('input[name=pt]')) {
                     r.addEventListener('change', () => {
                         type = r.value;
@@ -1629,6 +1633,7 @@
                 }
                 dlg.querySelector('button[value=ok]').focus();
             });
+        if (btn === 'dismiss') return dismissSuggestion(p);
         if (btn !== 'ok') return;
         const nd = Object.assign({}, d, { type });
         commit((pr) => { pr.directives = pr.directives.concat([nd]); }, `Added ${X.directiveString(nd)}`);
@@ -1642,9 +1647,19 @@
             `<p>${esc(p.msg.replace(/ — click.*/, ''))}.</p>
              <pre class="mono">    lda #${hi ? '&gt;' : '&lt;'}${esc(name)}	; $${X.h4(d.addr - 1)}</pre>
              <p class="dim">Adds <code>${esc(X.directiveString(d))}</code></p>`,
-            [{ label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]);
+            [{ label: 'Dismiss', value: 'dismiss' }, { label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]);
+        if (btn === 'dismiss') return dismissSuggestion(p);
         if (btn !== 'ok') return;
         commit((pr) => { pr.directives = pr.directives.concat([d]); }, `Added ${X.directiveString(d)}`);
+    }
+
+    // Stop suggesting p: a "dismiss" directive at the address it points at.
+    function dismissSuggestion(p) {
+        if (!p || !p.suggest) return;
+        const seg = X.keySeg(p.k), addr = X.keyAddr(p.k);
+        const sc = scopeSeg(seg, addr);
+        commit((pr) => { pr.directives = pr.directives.concat([{ type: 'dismiss', name: null, seg: sc, addr, range: 0 }]); },
+            `Dismissed the suggestion at $${X.h4(addr)}`);
     }
 
     function applyAllPointerSuggestions() {
@@ -1662,7 +1677,7 @@
         }
         if (p.suggest) {
             goKey(p.k);
-            if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest);
+            if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest, p);
             else if (p.suggest.type === 'hi' || p.suggest.type === 'lo') halfSuggestion(p);
             else pointerSuggestion(p);
             return;
@@ -1882,6 +1897,13 @@
         if (!S.project.binary) return;
         download(baseName() + '.xdis.json', X.serializeProject(S.project, S.bytes, S.embed), 'application/json');
         setStatus(`Saved ${baseName()}.xdis.json${S.embed ? ' (binary embedded)' : ''}`);
+    }
+
+    // The original binary, under its original name.
+    function saveBinary() {
+        if (!S.bytes || !S.project.binary) return;
+        download(S.project.binary.name || baseName() + '.bin', S.bytes, 'application/octet-stream');
+        setStatus(`Saved ${S.project.binary.name} (${S.bytes.length} bytes)`);
     }
 
     function saveAsm() {
@@ -2211,6 +2233,8 @@
         // side panel links (labels, xrefs, directives, segments)
         document.querySelector('.side').addEventListener('click', (e) => {
             if (e.target.classList.contains('dir-edit')) return;
+            const dm = e.target.closest('[data-dismiss]');
+            if (dm) return dismissSuggestion(S.problems[+dm.dataset.dismiss]);
             const prob = e.target.closest('[data-prob]');
             if (prob) return gotoProblem(S.problems[+prob.dataset.prob]);
             if (e.target.id === 'btn-apply-ptrs') return applyAllPointerSuggestions();
@@ -2314,6 +2338,7 @@
         $('btn-open-bin').onclick = $('btn-open-bin2').onclick = () => $('file-bin').click();
         $('btn-open-proj').onclick = $('btn-open-proj2').onclick = () => $('file-proj').click();
         $('btn-save-proj').onclick = saveProject;
+        $('btn-save-bin').onclick = saveBinary;
         $('btn-save-asm').onclick = saveAsm;
         $('btn-export-dop').onclick = exportDop;
         $('btn-import-dop').onclick = () => (S.project.binary ? $('file-dop').click() : setStatus('Open a binary first', true));

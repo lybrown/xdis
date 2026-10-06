@@ -96,6 +96,8 @@ Saving
 ------
 
 * **Save .asm**: the assembly exactly as shown in the listing.
+* **Save binary**: the original binary, under its original name. Useful when a
+  project with an embedded binary is all you have.
 * **Save project**: an `.xdis.json` file. The binary is embedded unless that
   is turned off under *Project*.
 * **Export .dop**: an option file the `dis` CLI can read. xdis-only directives
@@ -195,6 +197,10 @@ from the writer's own page, or from the operand's current high byte, whichever
 lands on code. Name the operand with a 2-byte label, e.g.
 `label dlivec=3:$55AC+1`, to get `dlivec equ *+1` and `sta dlivec` /
 `sta dlivec+1`.
+
+A suggestion you don't want can be dismissed with its ×, or with *Dismiss* in
+its dialog. That adds a `dismiss $ADDR` directive; delete it to get the
+suggestion back.
 
 The *Problems* panel lists load, trace and label warnings. Click one to
 jump to the address it concerns, or to the directive that caused it.

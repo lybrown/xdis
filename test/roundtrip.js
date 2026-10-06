@@ -159,6 +159,9 @@ const cases = [
     // ... and a bank directive resolves it
     { name: 'cart-xegs-bank-directive', type: 'cart', cartType: 12, directives: ['bank $A00B 1'],
       expect: ['jsr b1_l8000', 'inc l0601'], bytesFrom: 'cart-xegs-switch' },
+    // a dismissed suggestion is not applied
+    { name: 'dismiss', project: 'xdis/examples/abbayes-evilchurch.xdis.json', pointers: true,
+      directives: ['dismiss $2CA7'], absent: ['#>l2CE7'], expect: ['ldx #$2C'] },
     // every Atari symbol set at once, in priority order
     { name: 'ransack-allsyms', file: 'ransack/ransack.xex', include: ATARI_SETS },
     { name: 'galaxian-allsyms', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', include: ATARI_SETS,
@@ -381,6 +384,11 @@ for (const c of cases) {
         const found = re.test(asm);
         results.push(`expect ${re}: ${found ? 'found' : 'MISSING'}`);
         ok = ok && found;
+    }
+    for (const e of c.absent || []) {
+        const found = asm.includes(e);
+        results.push(`absent "${e}": ${found ? 'PRESENT' : 'absent'}`);
+        ok = ok && !found;
     }
     for (const e of c.expect || []) {
         const found = asm.includes(e);

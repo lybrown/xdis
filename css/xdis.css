@@ -275,6 +275,8 @@ body.dragging .empty .drop, body.dragging #listing { outline: 3px dashed var(--a
 .problem { padding: 4px 6px; border-left: 3px solid var(--warn); margin-bottom: 4px; background: var(--bg); font-size: 12px; }
 .problem.link { cursor: pointer; }
 .problem.suggest { border-left-color: var(--m-reloc); }
+.problem .dismiss { float: right; margin: -2px -4px 0 6px; color: var(--dim); background: none; border: 0; padding: 0 4px; }
+.problem .dismiss:hover { color: var(--warn); }
 .seg-table tr.reloc td { color: var(--m-reloc); }
 .problem.link:hover { background: var(--panel2); border-left-color: var(--accent); }
 

@@ -349,7 +349,7 @@
     // carried through .dop files as ";xdis ..." comment lines.
 
     const CLI_TYPES = ['code', 'data', 'vector', 'constant', 'address', 'codeptr'];
-    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank'];
+    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss'];
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
@@ -928,8 +928,9 @@
 
         function pointer(lo, hi, d) {
             if (!owner[lo] || !owner[hi]) {
-                // Vectors in symbol sets commonly point into ROM that is not loaded.
-                if (d.type === 'vector' && !owner[lo] && !owner[hi]) return -1;
+                // Vectors commonly point into ROM that is not loaded, and symbol
+                // sets describe the machine, not this program: no warning.
+                if ((d.type === 'vector' && !owner[lo] && !owner[hi]) || d.from) return -1;
                 warn(`${d.type} ${specString(d)}: pointer at $${h4(lo)} is in undefined memory`,
                     key(owner[lo] || owner[hi], owner[lo] ? lo : hi), d);
                 return -1;
@@ -1068,7 +1069,10 @@
             }
         }
 
-        for (const sg of findRelocations()) {
+        // suggestions dismissed with "dismiss $ADDR" (the address they point at)
+        const dismissed = new Set(directives.filter((d) => d.type === 'dismiss').map((d) => key(resolveSeg(d, d.addr), d.addr)));
+        const keep = (sg) => !dismissed.has(sg.at);
+        for (const sg of findRelocations().filter(keep)) {
             warnings.push({
                 msg: `Code at $${h4(sg.dir.addr)}-$${h4(sg.dir.addr + sg.dir.range)} is copied to $${h4(sg.dir.run)} ` +
                     `by the loop at $${h4(keyAddr(sg.at))} and run there — click to relocate it`,
@@ -1170,7 +1174,7 @@
             return null;
         }
 
-        for (const sg of findPointerPairs()) {
+        for (const sg of findPointerPairs().filter(keep)) {
             warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir });
         }
 
@@ -1192,8 +1196,9 @@
             const jumpVec = new Set();       // ... used by jmp (P) or declared as vectors
             const dataPtr = new Set();       // ... used by (P),y / (P,x)
             for (const d of directives) {
-                // word-sized locations: pointers, vectors and 2+ byte ranges
-                if ((POINTER_TYPES.includes(d.type) || d.range >= 1) && d.hi === undefined && d.type !== 'relocate') ptrUse.add(d.addr);
+                // declared pointers count as pointer use; a 2-byte data range
+                // alone does not (it may be a counter)
+                if (POINTER_TYPES.includes(d.type) && d.hi === undefined) ptrUse.add(d.addr);
                 if (d.type === 'vector') jumpVec.add(d.addr);
             }
             const jumpAt = new Map();        // operand address of jmp/jsr abs -> instruction
@@ -1348,6 +1353,8 @@
                 if (viaJsr) {
                     if (!target && !known) return;       // registers: need loaded code or a label
                 } else if (!ptrUse.has(P)) {
+                    // without pointer use, the address has to land on loaded code
+                    // or a label (a 2-byte data range alone may be a counter)
                     if (!target || isIO(P)) return;      // adjacent hardware registers are not pointers
                 }
                 if (seen.has(lo.at) || seen.has(hi.at)) return;

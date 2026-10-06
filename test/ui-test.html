@@ -299,6 +299,22 @@ function check(name, ok, detail) {
     check('context menu opens', !ctx.hidden && ctx.querySelectorAll('.mi').length >= 10, ctx.querySelectorAll('.mi').length + ' items');
     ctx.hidden = true;
 
+    // 10b. Save binary downloads the original bytes under the original name
+    const saveBin = doc.getElementById('btn-save-bin');
+    check('save binary enabled', !!saveBin && !saveBin.disabled);
+    let saved = null;
+    const realCreate = w.URL.createObjectURL;
+    w.URL.createObjectURL = (blob) => { saved = blob; return 'blob:test'; };
+    const realClick = w.HTMLAnchorElement.prototype.click;
+    let savedName = null;
+    w.HTMLAnchorElement.prototype.click = function () { savedName = this.download; };
+    saveBin.click();
+    w.URL.createObjectURL = realCreate;
+    w.HTMLAnchorElement.prototype.click = realClick;
+    const savedBytes = saved ? new Uint8Array(await saved.arrayBuffer()) : null;
+    check('save binary writes the original bytes', savedName === S.project.binary.name && savedBytes &&
+        savedBytes.length === S.bytes.length && savedBytes.every((b, i) => b === S.bytes[i]), savedName);
+
     // 11. memory map and inspector render
     check('inspector shows label input', !!doc.getElementById('in-label'));
     check('problems badge', doc.getElementById('problem-count') !== null);
@@ -379,6 +395,16 @@ function check(name, ok, detail) {
             const l396 = S2.listing.lines.find((l) => l.a === 0xA396 && l.k === 'ins');
             check('A392 shows #>lBA45', l392.p.map((p) => p[1]).join('').includes('#>lBA45'), l392.p.map((p) => p[1]).join(''));
             check('A396 shows #<lBA45', l396.p.map((p) => p[1]).join('').includes('#<lBA45'), l396.p.map((p) => p[1]).join(''));
+            // dismissing a suggestion removes it and records a directive
+            const firstSug = d2.querySelector('#problem-list .problem.suggest [data-dismiss]');
+            const nSug = S2.model.warnings.filter((w) => w.suggest).length;
+            firstSug.click();
+            await waitFor(() => S2.model.warnings.filter((w) => w.suggest).length < nSug);
+            check('dismiss removes the suggestion', S2.model.warnings.filter((w) => w.suggest).length === nSug - 1 &&
+                S2.project.directives.some((d) => d.type === 'dismiss'));
+            w2.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));
+            await waitFor(() => S2.model.warnings.filter((w) => w.suggest).length === nSug);
+            check('undo brings it back', S2.model.warnings.filter((w) => w.suggest).length === nSug);
             const before = S2.model.warnings.filter((w) => w.suggest).length;
             d2.getElementById('btn-apply-ptrs').click();
             await waitFor(() => S2.model.warnings.filter((w) => w.suggest).length < before);
