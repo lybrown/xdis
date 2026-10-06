@@ -91,6 +91,7 @@
             S.cur = S.anchor = firstInterestingLine();
             $('listing').scrollTop = Math.max(0, S.cur * LH - 3 * LH);
         }
+        if (F.text && !$('findbar').hidden) runFind();
         updateAll();
         scheduleSave();
         startScan();
@@ -346,7 +347,7 @@
         if (ln.u) cm += `<span class="u">; ${esc(ln.u.replace(/\n/g, ' '))}</span> `;
         if (ln.x) cm += xrefHtml(ln);
         else if (ln.k === 'dir' && ln.c) cm += '; ' + esc(ln.c);
-        const cls = 'row k-' + ln.k + (cur ? ' cur' : '') + (sel ? ' sel' : '');
+        const cls = 'row k-' + ln.k + (cur ? ' cur' : '') + (sel ? ' sel' : '') + (F.hitSet.has(i) ? ' hit' : '');
         return `<div class="${cls}" data-i="${i}"><span class="ad">${ad}</span><span class="by">${by}</span><span class="src">${src}</span><span class="cm">${cm}</span></div>`;
     }
 
@@ -455,6 +456,7 @@
     }
 
     function updatePos() {
+        if (F.text) updateFindCount();
         const ln = curLine();
         const el = $('status-pos');
         if (!ln) { el.textContent = ''; return; }
@@ -977,6 +979,91 @@
     }
 
     // ------------------------------------------------------------------
+    // Find in source: searches each line as it is saved in the .asm
+
+    const F = { text: '', caseSensitive: false, regex: false, hits: [], hitSet: new Set(), lines: null, for: null };
+
+    function findLines() {
+        if (F.for !== S.listing) {
+            F.lines = S.listing.lines.map((ln) => X.lineText(ln, S.project.options));
+            F.for = S.listing;
+        }
+        return F.lines;
+    }
+
+    // Recompute the matching lines; returns false for a bad regex.
+    function runFind() {
+        F.hits = [];
+        F.hitSet = new Set();
+        const input = $('find-input');
+        input.classList.remove('nomatch');
+        if (!S.listing || !F.text) return updateFindCount();
+        let test;
+        if (F.regex) {
+            let re;
+            try { re = new RegExp(F.text, F.caseSensitive ? '' : 'i'); } catch (e) {
+                input.classList.add('nomatch');
+                $('find-count').textContent = 'bad regex';
+                return false;
+            }
+            test = (t) => re.test(t);
+        } else {
+            const needle = F.caseSensitive ? F.text : F.text.toLowerCase();
+            test = F.caseSensitive ? (t) => t.includes(needle) : (t) => t.toLowerCase().includes(needle);
+        }
+        findLines().forEach((t, i) => { if (test(t)) { F.hits.push(i); F.hitSet.add(i); } });
+        if (!F.hits.length) input.classList.add('nomatch');
+        updateFindCount();
+        return true;
+    }
+
+    function updateFindCount() {
+        const el = $('find-count');
+        if (!F.text) { el.textContent = ''; return; }
+        const at = F.hits.indexOf(S.cur);
+        el.textContent = F.hits.length ? `${at >= 0 ? at + 1 : '–'} of ${F.hits.length}` : 'no matches';
+    }
+
+    // Go to the next (dir 1) or previous (dir -1) match from the cursor.
+    function findStep(dir, includeCurrent) {
+        if (!F.hits.length) return setStatus(F.text ? `No matches for ${F.text}` : '', !!F.text);
+        let i;
+        if (dir > 0) {
+            i = F.hits.find((h) => (includeCurrent ? h >= S.cur : h > S.cur));
+            if (i === undefined) { i = F.hits[0]; setStatus('Search wrapped to the top'); }
+        } else {
+            i = [...F.hits].reverse().find((h) => h < S.cur);
+            if (i === undefined) { i = F.hits[F.hits.length - 1]; setStatus('Search wrapped to the bottom'); }
+        }
+        moveTo(i, false, true);
+        updateFindCount();
+    }
+
+    function openFind() {
+        const bar = $('findbar');
+        bar.hidden = false;
+        const input = $('find-input');
+        // start with the selected word, if any
+        const sel = window.getSelection && String(window.getSelection()).trim();
+        if (sel && !/\s/.test(sel) && sel.length < 64) input.value = sel;
+        input.focus();
+        input.select();
+        if (input.value !== F.text) {
+            F.text = input.value;
+            runFind();
+        }
+        draw();
+    }
+
+    function closeFind() {
+        $('findbar').hidden = true;
+        F.hits = [];
+        F.hitSet = new Set();
+        draw();
+        $('listing').focus({ preventScroll: true });
+    }
+
+    // ------------------------------------------------------------------
     // Dialogs
 
     function dialog(title, bodyHtml, buttons, setup) {
@@ -1075,6 +1162,7 @@
             ['Click', 'An address in an Access: or Callers: comment jumps to that instruction'],
             ['Esc / Alt+←', 'Go back · Alt+→ forward'],
             ['G', 'Go to address or label'],
+            ['Ctrl+F', 'Find in the source (also the / key) · Enter or F3 next, Shift+Enter or Shift+F3 previous'],
             ['X', 'Show cross references in the inspector'],
             ['Shift+↑↓ / drag', 'Select a range'],
             ['← / →', 'Pick one byte of a line (or click it); N, ;, D… then apply to that byte. Double-click a byte to name it'],
@@ -2328,6 +2416,41 @@
             addDirectivesText(text);
         });
 
+        // find bar
+        let findTimer = 0;
+        $('find-input').addEventListener('input', (e) => {
+            clearTimeout(findTimer);
+            findTimer = setTimeout(() => {
+                F.text = e.target.value;
+                if (runFind() && F.hits.length) findStep(1, true);
+                draw();
+            }, 120);
+        });
+        $('find-input').addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter' || e.key === 'F3') {
+                e.preventDefault();
+                clearTimeout(findTimer);
+                if (F.text !== e.target.value) { F.text = e.target.value; runFind(); }
+                findStep(e.shiftKey ? -1 : 1);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeFind();
+            }
+        });
+        for (const [id, prop] of [['find-case', 'caseSensitive'], ['find-regex', 'regex']]) {
+            $(id).addEventListener('click', () => {
+                F[prop] = !F[prop];
+                $(id).classList.toggle('on', F[prop]);
+                runFind();
+                draw();
+                $('find-input').focus();
+            });
+        }
+        $('find-next').addEventListener('click', () => findStep(1));
+        $('find-prev').addEventListener('click', () => findStep(-1));
+        $('find-close').addEventListener('click', closeFind);
+
         // tabs
         document.querySelector('.tabs').addEventListener('click', (e) => {
             const b = e.target.closest('button[data-tab]');
@@ -2405,12 +2528,17 @@
             if (k === 'y' && !typing) { e.preventDefault(); return redo(); }
             if (k === 's') { e.preventDefault(); return e.shiftKey ? saveAsm() : saveProject(); }
             if (k === 'o') { e.preventDefault(); return $('file-bin').click(); }
+            if (k === 'f' && S.listing) { e.preventDefault(); return openFind(); }
+            if (k === 'g' && S.listing && F.text) { e.preventDefault(); return findStep(e.shiftKey ? -1 : 1); }
             if (k === 'c' && !typing && S.listing && S.anchor !== S.cur) { e.preventDefault(); return copySelection(); }
             if (!typing && (e.key === 'Home' || e.key === 'End')) { e.preventDefault(); return moveTo(e.key === 'Home' ? 0 : 1e9, e.shiftKey); }
             return;
         }
+        if (e.key === 'F3' && S.listing) { e.preventDefault(); return F.text ? findStep(e.shiftKey ? -1 : 1) : openFind(); }
         if (typing) return;
         if (!$('ctx').hidden && e.key === 'Escape') { $('ctx').hidden = true; return; }
+        if (e.key === 'Escape' && !$('findbar').hidden) { e.preventDefault(); return closeFind(); }
+        if (e.key === '/' && S.listing) { e.preventDefault(); return openFind(); }
         if (e.key === '?') { e.preventDefault(); return showHelp(); }
         if (!S.listing) return;
         const page = Math.max(1, Math.floor($('listing').clientHeight / LH) - 1);

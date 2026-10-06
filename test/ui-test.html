@@ -299,6 +299,35 @@ function check(name, ok, detail) {
     check('context menu opens', !ctx.hidden && ctx.querySelectorAll('.mi').length >= 10, ctx.querySelectorAll('.mi').length + ' items');
     ctx.hidden = true;
 
+    // 10a. find in the source
+    key('f', { ctrlKey: true });
+    const fbar = doc.getElementById('findbar'), fin = doc.getElementById('find-input');
+    check('Ctrl+F opens the find bar', !fbar.hidden && doc.activeElement === fin);
+    fin.value = 'portb';
+    fin.dispatchEvent(new w.Event('input'));
+    await sleep(200);
+    const lineSrc = () => w.XDis.lineText(S.listing.lines[S.cur], S.project.options);
+    check('typing jumps to the first match', /PORTB/.test(lineSrc()), lineSrc());
+    const count = doc.getElementById('find-count').textContent;
+    check('match count shown', /^\d+ of \d+$/.test(count), count);
+    const first = S.cur;
+    fin.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    check('Enter goes to the next match', S.cur > first && /PORTB/.test(lineSrc()));
+    fin.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+    check('Shift+Enter goes back', S.cur === first);
+    check('matching rows highlighted', doc.querySelectorAll('.row.hit').length > 0);
+    doc.getElementById('find-case').click();
+    check('match case finds nothing for portb', doc.getElementById('find-count').textContent === 'no matches');
+    doc.getElementById('find-case').click();
+    doc.getElementById('find-regex').click();
+    fin.value = 'sta\\s+PORT[AB]';
+    fin.dispatchEvent(new w.Event('input'));
+    await sleep(200);
+    check('regex search', /sta\s+PORT[AB]/.test(lineSrc()), lineSrc());
+    doc.getElementById('find-regex').click();
+    fin.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    check('Esc closes the find bar', fbar.hidden && !doc.querySelector('.row.hit'));
+
     // 10b. Save binary downloads the original bytes under the original name
     const saveBin = doc.getElementById('btn-save-bin');
     check('save binary enabled', !!saveBin && !saveBin.disabled);

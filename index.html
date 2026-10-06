@@ -33,6 +33,15 @@
 <main>
   <section class="center">
     <canvas id="map" title="Memory map — click to jump"></canvas>
+    <div id="findbar" class="findbar" hidden>
+      <input id="find-input" type="text" placeholder="Find in source" spellcheck="false" autocomplete="off">
+      <button id="find-case" class="toggle" title="Match case">Aa</button>
+      <button id="find-regex" class="toggle" title="Regular expression">.*</button>
+      <span id="find-count" class="dim"></span>
+      <button id="find-prev" title="Previous match (Shift+Enter, Shift+F3)">↑</button>
+      <button id="find-next" title="Next match (Enter, F3)">↓</button>
+      <button id="find-close" title="Close (Esc)">×</button>
+    </div>
     <div id="listing" tabindex="0">
       <div id="spacer"></div>
       <div id="rows"></div>

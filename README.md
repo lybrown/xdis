@@ -128,6 +128,7 @@ Click a line or select a range (shift+arrows or drag), then:
 | click | An address in an `Access:` or `Callers:` comment jumps to that instruction |
 | `Esc`, `Alt+←/→` | Navigate back / forward |
 | `G` | Go to an address (`2000`, `3:2000`) or label |
+| `Ctrl+F`, `/` | Find in the source; `Enter`/`F3` next, `Shift+Enter`/`Shift+F3` previous |
 | `Ctrl+Z` `Ctrl+Y` | Undo / redo |
 | `Ctrl+S`, `Ctrl+Shift+S` | Save project / save .asm |
 

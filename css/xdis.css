@@ -377,3 +377,26 @@ dialog .help-grid > :nth-child(odd) { text-align: right; white-space: nowrap; }
     .status .keys { display: none; }
     .row .by { display: none; }
 }
+
+/* find bar */
+.findbar {
+    position: absolute;
+    top: 32px;
+    right: 22px;
+    z-index: 5;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 5px 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+}
+.findbar input { width: 22ch; font-family: var(--mono); }
+.findbar input.nomatch { outline: 2px solid var(--warn); }
+.findbar button { padding: 1px 7px; }
+.findbar .toggle.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+#find-count { min-width: 7ch; text-align: center; font-size: 12px; }
+.row.hit { background: color-mix(in srgb, var(--m-udata) 22%, transparent); }
+.row.hit.cur { background: color-mix(in srgb, var(--m-udata) 45%, var(--cur)); }
