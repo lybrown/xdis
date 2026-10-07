@@ -72,3 +72,12 @@ data tube_data_register_4=$FEE7
 data cube_tube_data_out_from_host=$FEF0     
 data cube_tube_data_in_to_host=$FEF1        
 data cube_tube_status=$FEFD                 
+
+;       6502 VECTORS
+
+vector NMIVEC=$FFFA+1                       
+vector RSTVEC=$FFFC+1                       
+vector IRQVEC=$FFFE+1                       ;also BRK
+
+; Off until switched on in the symbol set viewer (see the top of harvest-bbc.py)
+;xdis defaultoff NMIVEC

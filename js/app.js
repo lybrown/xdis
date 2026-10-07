@@ -1298,7 +1298,7 @@
             let inc = p.includes.find((i) => i.name === setName);
             if (!inc) {
                 // never enabled: keep the choice for when it is
-                inc = { name: setName, text: SYM.files[setName], enabled: false };
+                inc = X.newInclude(setName, SYM.files[setName], { enabled: false });
                 p.includes.push(inc);
                 sortIncludes(p);
             }
@@ -1322,7 +1322,7 @@
         const render = (f, onlyUsed) => {
             const inc = incOf();
             const on = !!inc && inc.enabled !== false;
-            const off = new Set((inc && inc.off) || []);
+            const off = new Set((inc ? inc.off : X.defaultOffOf(text)) || []);
             const used = S.listing ? new Set([...S.listing.used.keys(), ...S.listing.defined]) : new Set();
             let out = '', last = null;
             filtered.length = 0;
@@ -1946,7 +1946,7 @@
         commit((p) => {
             const inc = p.includes.find((i) => i.name === name);
             if (inc) inc.enabled = on;
-            else if (SYM.files[name]) p.includes.push({ name, text: SYM.files[name], enabled: true });
+            else if (SYM.files[name]) p.includes.push(X.newInclude(name, SYM.files[name]));
             sortIncludes(p);
         }, `${on ? 'Enabled' : 'Disabled'} ${name}`);
     }
@@ -1958,8 +1958,7 @@
     function refreshBuiltins(p) {
         for (const inc of p.includes) {
             if (!inc.custom && SYM.files[inc.name] && inc.text !== SYM.files[inc.name]) {
-                inc.text = SYM.files[inc.name];
-                inc.parsed = null;
+                Object.assign(inc, X.refreshInclude(inc, SYM.files[inc.name]));
             }
         }
         sortIncludes(p);
@@ -2469,7 +2468,7 @@
         }
         for (const g of groups) {
             for (const f of SYM.groups[g]) {
-                if (!S.project.includes.some((i) => i.name === f)) S.project.includes.push({ name: f, text: SYM.files[f], enabled: true });
+                if (!S.project.includes.some((i) => i.name === f)) S.project.includes.push(X.newInclude(f, SYM.files[f]));
             }
         }
         sortIncludes(S.project);
@@ -2523,7 +2522,7 @@
                 problems.push(...r.errors);
                 if (asInclude || referenced.has(name)) {
                     const old = p.includes.findIndex((i) => i.name === name);
-                    const inc = { name, text: texts.get(name), enabled: true, custom: true };
+                    const inc = X.newInclude(name, texts.get(name), { custom: true });
                     if (old >= 0) p.includes[old] = inc;
                     else p.includes.push(inc);
                     continue;
@@ -2535,13 +2534,13 @@
             }
             for (const a of referenced) {
                 if (p.includes.some((i) => i.name === a)) continue;
-                if (SYM.files[a]) p.includes.push({ name: a, text: SYM.files[a], enabled: true });
+                if (SYM.files[a]) p.includes.push(X.newInclude(a, SYM.files[a]));
                 else problems.push(`arg ${a}: not found — select it together with the .dop, or add it under Directives → Symbol sets`);
             }
             for (const r of parsed.values()) {
                 for (const [setName, names] of Object.entries(r.off)) {
                     const i = p.includes.findIndex((x) => x.name === setName);
-                    if (i >= 0) p.includes[i] = Object.assign({}, p.includes[i], { off: [...new Set((p.includes[i].off || []).concat(names))] });
+                    if (i >= 0) p.includes[i] = Object.assign({}, p.includes[i], { off: [...new Set(names)] });   // the file's whole list
                 }
             }
             sortIncludes(p);
@@ -2874,7 +2873,7 @@
                     p.directives = d.type === 'relocate' ? X.edit.addRelocation(p.directives, S.img, d) : p.directives.concat([d]);
                 }
                 Object.assign(p.options, r.options);
-                for (const a of r.args) if (SYM.files[a] && !p.includes.some((i) => i.name === a)) p.includes.push({ name: a, text: SYM.files[a], enabled: true });
+                for (const a of r.args) if (SYM.files[a] && !p.includes.some((i) => i.name === a)) p.includes.push(X.newInclude(a, SYM.files[a]));
             }, r.directives.length > 1 ? `Added ${r.directives.length} directives` : `Added ${v.trim()}`);
             return true;
         };
@@ -3075,7 +3074,7 @@
                 const r = X.parseDop(await get(url), url);
                 for (const a of r.args) {
                     const text = SYM.files[a] || await get(url.replace(/[^/]*$/, '') + a).catch(() => null);
-                    if (text) S.project.includes.push({ name: a, text, enabled: true });
+                    if (text) S.project.includes.push(X.newInclude(a, text));
                     else S.importProblems.push(`arg ${a}: not found`);
                 }
                 S.importProblems.push(...r.errors);

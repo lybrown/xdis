@@ -268,6 +268,21 @@ const cases = [
                     0x4C, 0x0F, 0x08])) },                                                             // jmp to the bne
         ];
     })(),
+    // default-off labels: bbchw.dop's NMIVEC starts off (its handler isn't
+    // traced) while IRQVEC and RSTVEC are on; switching NMIVEC on traces it
+    ...(() => {
+        const b = new Uint8Array(0x100);
+        b.set([0xA9, 0x01, 0x60], 0x00);              // reset: lda #1 / rts
+        b.set([0xA2, 0x05, 0x40], 0x10);              // NMI: ldx #5 / rti
+        b.set([0xA0, 0x07, 0x40], 0x20);              // IRQ: ldy #7 / rti
+        b.set([0x10, 0xFF, 0x00, 0xFF, 0x20, 0xFF], 0xFA);
+        return [
+            { name: 'default-off', type: 'raw', org: 0xFF00, bytes: b, include: ['symbols/bbcmos.dop', 'symbols/bbchw.dop'],
+                expect: ['ldy #$07', 'lda #$01'], absent: ['ldx #$05'] },
+            { name: 'default-off-on', type: 'raw', org: 0xFF00, bytes: b, include: ['symbols/bbcmos.dop', 'symbols/bbchw.dop'],
+                includeOff: { 'bbchw.dop': [] }, expect: ['ldx #$05', 'ldy #$07'] },
+        ];
+    })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests
@@ -515,8 +530,11 @@ for (const c of cases) {
     if (c.include && c.project) project.includes = [];
     for (const inc of c.include || []) {
         const name = path.basename(inc);
-        project.includes.push({ name, text: fs.readFileSync(path.join(__dirname, '..', inc), 'utf8'),
-            off: (c.includeOff || {})[name] });
+        // like the app: labels the set switches off by default start off,
+        // unless the case lists its own off labels
+        const text = fs.readFileSync(path.join(__dirname, '..', inc), 'utf8');
+        const off = (c.includeOff || {})[name];
+        project.includes.push(X.newInclude(name, text, off ? { off } : {}));
     }
     let type = c.type || X.detectType(file, bytes);
     let org = c.org || 0;

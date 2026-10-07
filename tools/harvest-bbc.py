@@ -144,6 +144,16 @@ OS_CALLS = {  # entry point -> official name and description (Advanced User Guid
 }
 
 
+# Added by hand (not from the sources above). The ROM header entries are
+# JMPs in a sideways ROM paged in at $8000 (romStartAddress only for a
+# language ROM): code, but off by default, since $8000 isn't always a ROM in
+# a memory dump. NMIVEC is used with Econet or a hard disc (rare setups).
+CODE_WORKSPACE = {'romStartAddress', 'romServiceEntry'}
+MOS_DEFAULT_OFF = ['romStartAddress', 'romServiceEntry']
+CPU_VECTORS = [(0xFFFA, 'NMIVEC', ''), (0xFFFC, 'RSTVEC', ''), (0xFFFE, 'IRQVEC', 'also BRK')]
+HW_DEFAULT_OFF = ['NMIVEC']
+
+
 def dop_line(kind, name, addr, rng, comment):
     spec = f'{name}=${addr:X}' + (f'+{rng:X}' if rng else '')
     return f'{kind} {spec}'.ljust(44) + (f';{comment}' if comment else '')
@@ -184,8 +194,10 @@ def main():
         if sections.get(id(target)) != sec:
             sections[id(target)] = sec
             target += ['', f';       {sec.upper()}', '']
-        target.append(dop_line('data', name, addr, 0, comment))
+        target.append(dop_line('code' if name in CODE_WORKSPACE else 'data', name, addr, 0, comment))
         seen.add(addr)
+    lines += ['', '; Off until switched on in the symbol set viewer (see the top of harvest-bbc.py)',
+              ';xdis defaultoff ' + ' '.join(MOS_DEFAULT_OFF)]
     for fname, body in (('bbcmos.dop', lines), ('bbcmosbuf.dop', buf)):
         (ROOT / 'symbols' / fname).write_text('\n'.join(body) + '\n')
         print(f'wrote symbols/{fname}:', sum(1 for l in body if l and not l.startswith(';')), 'entries')
@@ -202,6 +214,11 @@ def main():
         lines.append(dop_line('data', name, addr, 0, ''))
     if 0xFD00 not in hw_seen:
         lines.insert(4, dop_line('data', 'jim', 0xFD00, 0xFF, 'paged RAM (1 MHz bus)'))
+    lines += ['', ';       6502 VECTORS', '']
+    for addr, name, comment in CPU_VECTORS:
+        lines.append(dop_line('vector', name, addr, 1, comment))
+    lines += ['', '; Off until switched on in the symbol set viewer (see the top of harvest-bbc.py)',
+              ';xdis defaultoff ' + ' '.join(HW_DEFAULT_OFF)]
     (ROOT / 'symbols' / 'bbchw.dop').write_text('\n'.join(lines) + '\n')
     print('wrote symbols/bbchw.dop:', len(hw_seen), 'entries')
 

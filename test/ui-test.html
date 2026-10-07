@@ -414,6 +414,29 @@ function check(name, ok, detail) {
         check('Esc returns from a section jump', S.cur === c1, `line ${S.cur}`);
     }
 
+    // 10b1. labels a symbol set switches off by default: bbchw.dop's NMIVEC
+    {
+        doc.querySelector('[data-tab=directives]').click();
+        doc.querySelector('[data-viewsym="bbchw.dop"]').click();
+        for (let t = 0; t < 100 && !(doc.getElementById('dlg').open && doc.getElementById('sv-table')); t++) await sleep(10);
+        const rowOf = (n) => Array.from(doc.querySelectorAll('#sv-table [data-symrow]')).find((r) => r.querySelectorAll('td')[1].textContent.replace('● ', '') === n);
+        const nmi = rowOf('NMIVEC'), irq = rowOf('IRQVEC');
+        check('a default-off label shows switched off before the set is used', nmi && !nmi.querySelector('[data-symon]').checked &&
+            irq && irq.querySelector('[data-symon]').checked);
+        doc.querySelector('#dlg button[value=ok]').click();
+        await sleep(20);
+        const box = doc.querySelector('[data-sym="bbchw.dop"]');
+        box.checked = true;
+        box.dispatchEvent(new w.Event('change', { bubbles: true }));
+        await sleep(20);
+        const inc = S.project.includes.find((i) => i.name === 'bbchw.dop');
+        check('adding the set starts its default-off labels off', inc && (inc.off || []).join() === 'NMIVEC' &&
+            /\(1 off\)/.test(doc.getElementById('symbol-sets').textContent), inc && JSON.stringify(inc.off));
+        key('z', { ctrlKey: true });
+        check('undo removes the set again', !S.project.includes.some((i) => i.name === 'bbchw.dop'));
+        doc.querySelector('[data-tab=inspect]').click();
+    }
+
     // 10a. find in the source
     key('f', { ctrlKey: true });
     const fbar = doc.getElementById('findbar'), fin = doc.getElementById('find-input');

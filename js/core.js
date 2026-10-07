@@ -523,9 +523,17 @@
             const ext = /^\s*;xdis\s+(.*)$/.exec(line);
             if (ext) {
                 line = ext[1];
-                const offm = /^off\s+(\S+)\s+(.*)$/.exec(line);
+                // off SET [NAMES]: the labels switched off in a symbol set
+                // (the whole list: none listed means all on)
+                const offm = /^off\s+(\S+)(?:\s+(.*))?$/.exec(line);
                 if (offm) {
-                    res.off[offm[1]] = (res.off[offm[1]] || []).concat(offm[2].trim().split(/\s+/));
+                    res.off[offm[1]] = (res.off[offm[1]] || []).concat((offm[2] || '').trim().split(/\s+/).filter(Boolean));
+                    return;
+                }
+                // defaultoff NAMES, in a symbol set: labels that start switched off
+                const defm = /^defaultoff\s+(.*)$/.exec(line);
+                if (defm) {
+                    res.defaultOff = (res.defaultOff || []).concat(defm[1].trim().split(/\s+/).filter(Boolean));
                     return;
                 }
                 const opt = /^option\s+(\w+)\s+(\S+)/.exec(line);
@@ -586,7 +594,9 @@
         for (const inc of project.includes || []) {
             if (inc.enabled === false) continue;
             out.push('arg ' + inc.name);
-            if (inc.off && inc.off.length) out.push(`;xdis off ${inc.name} ${inc.off.join(' ')}`);
+            // written out when any are off, or when the set switches some off
+            // by default (so turning those on survives a round trip)
+            if ((inc.off && inc.off.length) || defaultOffOf(inc.text).length) out.push(`;xdis off ${inc.name} ${(inc.off || []).join(' ')}`.trimEnd());
         }
         const b = project.binary;
         if (b) {
@@ -625,6 +635,29 @@
     }
 
     // On import, drop the CLI fallback line that follows each ";xdis" line.
+    // Labels a symbol set switches off until turned on (";xdis defaultoff").
+    function defaultOffOf(text) {
+        const out = [];
+        for (const m of (text || '').matchAll(/^\s*;xdis\s+defaultoff\s+(.*)$/gm)) out.push(...m[1].trim().split(/\s+/).filter(Boolean));
+        return out;
+    }
+
+    // A symbol set as a project includes it, with its default-off labels off.
+    function newInclude(name, text, extra) {
+        const off = defaultOffOf(text);
+        return Object.assign({ name, text, enabled: true }, off.length ? { off } : {}, extra);
+    }
+
+    // A built-in set's text changed (xdis was updated): labels it newly
+    // switches off by default start off (switched-on ones it already had
+    // switched off by default stay as the project has them).
+    function refreshInclude(inc, text) {
+        const had = new Set(defaultOffOf(inc.text));
+        const add = defaultOffOf(text).filter((n) => !had.has(n));
+        const off = add.length ? [...new Set((inc.off || []).concat(add))] : inc.off;
+        return Object.assign({}, inc, { text, parsed: null }, off ? { off } : {});
+    }
+
     function dedupeImported(dirs) {
         const out = [];
         for (let i = 0; i < dirs.length; i++) {
@@ -3048,7 +3081,7 @@
         OPS, h2, h4, hx, key, keySeg, keyAddr, encodeText, LABEL_RE, cartTypesFor,
         cartTypes: () => Object.keys(CART_TYPES).map(Number).map((t) => ({ type: t, name: CART_TYPES[t][0], kb: CART_SIZES[t] })),
         detectType, loadImage, analyze, render, asmText, lineText,
-        parseDop, exportDop, dedupeImported, parseDirectiveLine, directiveString, specString,
+        parseDop, exportDop, dedupeImported, defaultOffOf, newInclude, refreshInclude, parseDirectiveLine, directiveString, specString,
         defaultOptions, newProject, allDirectives, serializeProject, deserializeProject,
         redundancyScan, sameCode, TRACE_TYPES,
         toBase64, fromBase64,

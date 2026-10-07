@@ -404,8 +404,11 @@ data vduVariablesEnd=$37F
 
 ;       ROM HEADER ADDRESSES
 
-data romStartAddress=$8000                  
-data romServiceEntry=$8003                  
+code romStartAddress=$8000                  
+code romServiceEntry=$8003                  
 data romTypeByte=$8006                      
 data romCopyrightOffsetPointer=$8007        
 data romTitleString=$8009                   
+
+; Off until switched on in the symbol set viewer (see the top of harvest-bbc.py)
+;xdis defaultoff romStartAddress romServiceEntry
