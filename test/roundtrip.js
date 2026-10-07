@@ -219,6 +219,18 @@ const cases = [
         return [
             { name: 'gap-code-tail', type: 'prg', bytes: tail, problems: [/Possible code at \$0811-\$081E that nothing traces into/] },
             { name: 'gap-code-after-text', type: 'prg', bytes: text, problems: [/Possible code at \$0814-\$0824 that nothing traces into/] },
+            // a call to an entry point traced code also calls, whose code isn't
+            // in the image (zeros at $0830, like the BBC's Tube entry at $0406)
+            { name: 'gap-code-unknown-entry', type: 'prg',
+                bytes: Uint8Array.from(stub.slice(0, -1).concat([0x20, 0x30, 0x08, 0x60,   // main: jsr $0830 / rts
+                    0xA2, 0x05, 0x20, 0x30, 0x08, 0xCA, 0xD0, 0xFA, 0x8D, 0x20, 0xD0, 0x60], new Array(19).fill(0))),
+                problems: [/Possible code at \$0811-\$081C that nothing traces into/] },
+            // a loop left by beq, whose bne is followed by text
+            { name: 'gap-code-branch-end', type: 'prg',
+                bytes: Uint8Array.from(stub.concat([0xA9, 0x00, 0x8D, 0x20, 0xD0, 0xA2, 0x00,   // lda #0 / sta $D020 / ldx #0
+                    0xBD, 0x30, 0x08, 0xF0, 0xF3, 0x9D, 0x00, 0x04, 0xE8, 0xD0, 0xF5,              // lda $0830,x / beq main / sta $0400,x / inx / bne
+                    0x53, 0x50, 0x2E, 0x0D, 0x45, 0x2E, 0x0D])),                                   // "SP." CR "E." CR
+                problems: [/Possible code at \$080E-\$081F that nothing traces into/] },
         ];
     })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],

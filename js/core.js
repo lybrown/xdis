@@ -1379,7 +1379,15 @@
                     const l = labels.get(key(segFor(T, t), t));
                     return !!(l && l.user);
                 };
-                const codeAt = (t) => isCodeStart(key(segFor(T, t), t));
+                // traced code, or somewhere traced code calls or jumps to (an
+                // entry point whose code isn't in the image, e.g. the Tube's
+                // $0406 on a BBC)
+                const codeAt = (t) => {
+                    const k = key(segFor(T, t), t);
+                    if (isCodeStart(k)) return true;
+                    const r = refs.get(k);
+                    return !!(r && r.callers.some((x) => typeof x === 'number' && isCodeStart(x)));
+                };
                 // a call or branch out of a block may go to another untraced
                 // block that decodes as code; it needs no evidence of its own
                 // (often it is the tail of a routine, e.g. pla / tax / jmp)
@@ -1398,17 +1406,25 @@
                     const starts = new Set();
                     const targets = [];
                     let o = c, score = 0, n = 0, far = c;
+                    // Code often uses a conditional branch as a jump (a loop
+                    // left by another branch, or lda #8 / bne): when what
+                    // follows one doesn't decode, the block ends at it, as
+                    // long as no branch goes further.
+                    let branchEnd = -1;
+                    const endsHere = () => branchEnd === o && o > far;
                     for (;;) {
-                        if (o >= len) return null;
+                        if (o >= len) { if (endsHere()) break; return null; }
                         if (busy[o]) {
                             // ran into traced code: fine if exactly at an instruction
-                            if (!T.ilen[o] || o === c) return null;
+                            if (!T.ilen[o] || o === c) { if (endsHere()) break; return null; }
                             break;
                         }
                         const op = OPS[data[o]];
-                        if (op.code === 0 || op.jam || (op.illegal && !opts.illegal)) return null;
-                        if (o + op.len > len) return null;
-                        for (let x = 1; x < op.len; x++) if (busy[o + x]) return null;
+                        if (op.code === 0 || op.jam || (op.illegal && !opts.illegal) || o + op.len > len ||
+                            [1, 2].some((x) => x < op.len && busy[o + x])) {
+                            if (endsHere()) break;
+                            return null;
+                        }
                         starts.add(o);
                         if (++n > MAX) return null;
                         score += llr[data[o]];
@@ -1440,6 +1456,7 @@
                             }
                             o = r.resume - start;
                         }
+                        if (op.branch) branchEnd = o;
                         if (op.mn === 'rti') score -= 4;               // $40 is common in data
                         if ((op.mn === 'rts' || op.mn === 'rti' || op.mn === 'jmp') && o > far) break;
                     }
