@@ -2020,6 +2020,7 @@
             ${cb('illegal', 'Trace through undocumented opcodes', '-i')}
             <div class="num"><span>Data bytes per line</span><input type="number" min="1" max="32" data-num="dataPerLine" value="${o.dataPerLine}"></div>
             <div class="num"><span>Text chars per line</span><input type="number" min="1" max="120" data-num="textPerLine" value="${o.textPerLine}"></div>
+            <div class="num"><span title="Column where ; comments start in the .asm, padded with spaces">Comment column</span><input type="number" min="0" max="200" data-num="commentColumn" value="${o.commentColumn !== undefined ? o.commentColumn : 30}"></div>
             <div class="num"><span title="Collapse runs of identical bytes into :N dta; 0 disables">Fill run minimum</span><input type="number" min="0" max="65536" data-num="fillMin" value="${o.fillMin}"></div>
             <div class="num"><span title="Also collapse repeated patterns of up to this many bytes into :N dta $XX,$YY,… (3+ copies, at least the fill run minimum in total); 0 disables">Repeat patterns up to</span><input type="number" min="0" max="64" data-num="patternMax" value="${o.patternMax || 0}"></div>
             </div>

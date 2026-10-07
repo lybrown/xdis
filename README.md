@@ -329,6 +329,8 @@ test file. Where xdis intentionally differs:
   byte become `:N dta $XX`. Optionally (*Repeat patterns up to* under
   *Project*), repeated patterns become `:N dta $XX,$YY,...` too.
 * Pointer tables and vectors are shown as `dta a(label)`.
+* Comments start in a fixed column (30 by default, *Comment column* under
+  *Project*), padded with spaces rather than tabs.
 * A branch that the instruction before it always takes (`lda #$20` / `bne`,
   `clc` / `bcc`, `sec` / `bcs`, `clv` / `bvc`) is treated as a jump: the bytes
   after it aren't traced from there. If anything jumps to the branch itself,

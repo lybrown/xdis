@@ -261,8 +261,12 @@ const cases = [
     ...(() => {
         const stub = [0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0];
         return [
-            { name: 'forced-branch', type: 'prg', expect: ['dta $A9,$FF'], absent: ['lda #$FF'],
+            // also: ; comments start in column 30 (by default), padded with spaces
+            { name: 'forced-branch', type: 'prg', expect: ['dta $A9,$FF'], absent: ['lda #$FF', '\t'],
+                expectRe: [/^    lda #\$20 {18}; 080D: A9 20$/m, /^l080D {25}; Callers/m],
                 bytes: Uint8Array.from(stub.concat([0xA9, 0x20, 0xD0, 0x02, 0xA9, 0xFF, 0x60])) },   // lda #$20 / bne / (data) / rts
+            { name: 'comment-column', type: 'prg', options: { commentColumn: 40 }, expectRe: [/^    lda #\$20 {28}; 080D/m],
+                bytes: Uint8Array.from(stub.concat([0xA9, 0x20, 0xD0, 0x02, 0xA9, 0xFF, 0x60])) },
             { name: 'forced-branch-jumped-to', type: 'prg', expect: ['iny'],
                 bytes: Uint8Array.from(stub.concat([0xA9, 0x20, 0xD0, 0x04, 0xC8, 0x60, 0x00, 0x00,     // lda #$20 / bne / iny / rts
                     0x4C, 0x0F, 0x08])) },                                                             // jmp to the bne
@@ -301,7 +305,7 @@ const cases = [
       directives: ['data pmdata=$4300', 'data dlist2=$3D00+50'],
       expect: ['lda #>pmdata', 'pmdata equ $4300', 'lda #>l3A00',
           // an equate's comment includes accesses to offsets into its range
-          'dlist2 equ $3D00\t\t; Access: A09C A101 A104'] },
+          'dlist2 equ $3D00              ; Access: A09C A101 A104'] },
     // labels in operand overrides get their equates
     { name: 'override-refs', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json',
       directives: ['data pmdata=$4300', 'operand 5:$4800 #>pmdata', 'lo 5:$4801 $1243'],

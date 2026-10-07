@@ -606,7 +606,7 @@
         for (const [dop, opt] of Object.entries(OPTION_MAP)) {
             out.push(`${dop} ${o[opt] ? 1 : 0}`);
         }
-        for (const k of ['syntax', 'dataPerLine', 'fillMin', 'patternMax', 'textPerLine']) {
+        for (const k of ['syntax', 'dataPerLine', 'fillMin', 'patternMax', 'textPerLine', 'commentColumn']) {
             out.push(`;xdis option ${k} ${o[k]}`);
         }
         if (model && model.img.cartDirectives && model.img.cartDirectives.length) {
@@ -688,6 +688,7 @@
             syntax: 'xasm',        // 'xasm' (org f:, run, ini, a:) or 'mads' (explicit headers, .a)
             dataPerLine: 16,
             textPerLine: 32,
+            commentColumn: 30,     // ; comments start in this column (padded with spaces)
             fillMin: 32,           // collapse runs of identical bytes into :N dta; 0 = off
             patternMax: 0,         // also repeated patterns up to this many bytes; 0 = off
         };
@@ -2775,11 +2776,9 @@
         }
         if (ln.u) cm.push(ln.u.replace(/\n/g, ' '));
         if (!cm.length) return src;
-        if (ln.k === 'label') {
-            src += '\t'.repeat(Math.max(1, 3 - (src.length >> 3)));
-            return src + '; ' + cm.join(' ');
-        }
-        return src + '\t\t; ' + cm.join(' ');
+        // spaces up to the comment column (at least one)
+        const col = opts.commentColumn >= 0 ? opts.commentColumn | 0 : 30;
+        return src + ' '.repeat(Math.max(1, col - src.length)) + '; ' + cm.join(' ');
     }
 
     function asmText(listing, opts) {
