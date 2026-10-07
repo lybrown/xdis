@@ -104,7 +104,7 @@ const cases = [
     // with bit 7 set (the next instruction) or a zero (raises the error);
     // a wrapper adds "Disk " and passes its caller's data on
     ...(() => {
-        const b = new Uint8Array(0x086B - 0x0801 + 2);
+        const b = new Uint8Array(0x0885 - 0x0801 + 2);
         const put = (a, bytes) => b.set(bytes, a - 0x0801 + 2);
         b.set([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0]);
         put(0x080D, [0x20, 0x30, 0x08, 0xC7, 0x4F, 0x4B, 0xA9, 0x00,          // jsr err / $C7 "OK" / lda #0
@@ -116,11 +116,16 @@ const cases = [
             0x30, 0x03, 0xD0, 0xF4, 0x00, 0x6C, 0xFB, 0x00]);                    // bmi out / bne loop / brk / out: jmp ($FB)
         put(0x0850, [0xE6, 0xFB, 0xD0, 0x02, 0xE6, 0xFC, 0x60]);              // inc: inc $FB / bne / inc $FC / rts
         put(0x0860, [0x20, 0x30, 0x08, 0x00, 0x44, 0x69, 0x73, 0x6B, 0x20, 0x90, 0xC5]);   // disk: jsr err / $00 "Disk " / bcc err
+        // code nothing calls, with an error call that a branch skips
+        put(0x0870, [0xA9, 0x00, 0xD0, 0x08, 0x20, 0x30, 0x08, 0x07, 0x45, 0x52, 0x52, 0x00,   // lda #0 / bne / jsr err / $07 "ERR" $00
+            0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0x8D, 0x20, 0xD0, 0x60]);              // ldx #5 / dex / bne / sta $D020 / rts
         return [
             { name: 'inline-error-suggest', type: 'prg', bytes: b,
                 problems: [/l0830 pulls its return address and reads the bytes after the jsr: probably inline text up to a byte with bit 7 set, after 1 byte that is always data \(a zero byte raises an error instead\)/] },
+            { name: 'inline-error-gap', type: 'prg', bytes: b, directives: ['inline $0830 bit7 lead 1 brk'],
+                problems: [/Possible code at \$0870-\$0884 that nothing traces into/] },
             { name: 'inline-error', type: 'prg', bytes: b, pointers: true,
-                expect: ["dta $C7,c'OK'", 'lda #$00', "dta $01,c'Full'", 'ldx #$00', "dta $05,c'BAD',$00", "dta $00,c'Disk '", 'bcc l0830'] },
+                expect: ["dta $C7,c'OK'", 'lda #$00', "dta $01,c'Full'", 'ldx #$00', "dta $05,c'BAD',$00", "dta $00,c'Disk '", 'bcc l0830', "dta $07,c'ERR',$00", 'dex'] },
         ];
     })(),
     {
@@ -200,6 +205,20 @@ const cases = [
                 problems: [/Parameter block \(8 bytes\) at \$1918 passed to OSWORD 7 at \$1906/, /String at \$1928 passed to OSCLI at \$190D/] },
             { name: 'struct-bbc-applied', type: 'raw', org: 0x1900, bytes: bbc, include: ['symbols/bbcmos.dop'], directives: ['code $1900'],
                 pointers: true, expect: ["dta c'FX 0',$0D", 'ldx #<l1918', 'ldy #>l1928'] },
+        ];
+    })(),
+    // a block that branches to a short untraced tail (pla / tax / rts) is
+    // still code; text just before a routine is not part of it
+    ...(() => {
+        const stub = [0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0, 0x60];   // main: rts
+        const tail = Uint8Array.from(stub.concat([0x68, 0xAA, 0x60,           // tail: pla / tax / rts
+            0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0xAD, 0x20, 0xD0, 0xF0, 0xF3,          // ldx #5 / dex / bne / lda $D020 / beq tail
+            0x8D, 0x21, 0xD0, 0x60]));                                           // sta $D021 / rts
+        const text = Uint8Array.from(stub.concat([0x48, 0x45, 0x52, 0x45, 0x5C, 0x0D,   // "HERE\" CR
+            0xA9, 0xC8, 0xA2, 0x03, 0x20, 0x0D, 0x08, 0xA9, 0x8C, 0xA2, 0x00, 0xA0, 0x00, 0x20, 0x0D, 0x08, 0x60]));
+        return [
+            { name: 'gap-code-tail', type: 'prg', bytes: tail, problems: [/Possible code at \$0811-\$081E that nothing traces into/] },
+            { name: 'gap-code-after-text', type: 'prg', bytes: text, problems: [/Possible code at \$0814-\$0824 that nothing traces into/] },
         ];
     })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],

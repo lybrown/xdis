@@ -1381,7 +1381,8 @@
                 };
                 const codeAt = (t) => isCodeStart(key(segFor(T, t), t));
                 // a call or branch out of a block may go to another untraced
-                // block, if that one looks like code too
+                // block that decodes as code; it needs no evidence of its own
+                // (often it is the tail of a routine, e.g. pla / tax / jmp)
                 const memo = new Map();
                 const blockAt = (t) => {
                     const c = t - start;
@@ -1425,20 +1426,48 @@
                             score += 2;
                         }
                         o += op.len;
+                        // a call with inline data continues after the data,
+                        // or not at all (a routine that raises an error)
+                        const inl = op.mn === 'jsr' && op.mode === 'abs' && inlineAt.get(key(segFor(T, w), w));
+                        if (inl) {
+                            const r = scanInline(a, inl, (x) => (x - start >= 0 && x - start < len && !busy[x - start] ? data[x - start] : -1));
+                            if (r.error) return null;
+                            if (r.resume < 0) {
+                                // like rts: the block ends, unless a branch goes past
+                                o = r.end - start;
+                                if (o > far) break;
+                                continue;
+                            }
+                            o = r.resume - start;
+                        }
                         if (op.mn === 'rti') score -= 4;               // $40 is common in data
                         if ((op.mn === 'rts' || op.mn === 'rti' || op.mn === 'jmp') && o > far) break;
                     }
                     for (const t of targets) {
                         if (!starts.has(t - start) && !codeAt(t) && !blockAt(t)) return null;
                     }
-                    if (n < MIN || score < 12 || score < n / 2) return null;
+                    if (score < 0) return null;
                     return { end: o, n, score };
                 };
                 for (let c = 0; c < len; c++) {
                     if (busy[c] || !startsCode[data[c]]) continue;
-                    const m = memo.get(c);
-                    const b = memo.has(c) && !(m && m.pending) ? m : block(c);
+                    const strict = (x) => {
+                        const m = memo.get(x);
+                        const b = memo.has(x) && !(m && m.pending) ? m : block(x);
+                        return b && b.n >= MIN && b.score >= 12 && b.score >= b.n / 2 ? b : null;   // a suggestion needs evidence
+                    };
+                    let b = strict(c);
                     if (!b) continue;
+                    // data just before code can decode into it: of the starts
+                    // that end in the same place, keep the best scoring one
+                    for (let c2 = c + 1; c2 < Math.min(b.end, c + 32); c2++) {
+                        if (busy[c2] || !startsCode[data[c2]]) continue;
+                        const b2 = strict(c2);
+                        if (b2 && b2.end === b.end && b2.score > b.score) {
+                            b = b2;
+                            c = c2;
+                        }
+                    }
                     const a = start + c;
                     out.push({
                         at: key(T.seg.index, a),
