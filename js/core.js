@@ -361,6 +361,27 @@
         bit7last: 'text whose last byte has bit 7 set; continues after it',
         zero: 'text ending in a zero byte; continues after it',
     };
+    // The inline data after a jsr at `at` for inline directive d, reading
+    // bytes with read(a) (-1 if not loaded): {end} just past the data and
+    // {resume} where execution continues (-1: it doesn't), or {error}.
+    function scanInline(at, d, read) {
+        const a0 = at + 3;
+        const n = /^\d+$/.test(d.mode) ? +d.mode : 0;
+        let a = a0;
+        for (;; a++) {
+            if (n && a - a0 === n) break;
+            const b = a <= 0xFFFF ? read(a) : -1;
+            if (b < 0) return { error: 'runs into memory that is not loaded' };
+            if (a - a0 > 255) return { error: 'has no end within 256 bytes' };
+            if (n || a - a0 < (d.lead || 0)) continue;
+            if (d.brk && b === 0) return { end: a + 1, resume: -1 };      // the routine raises an error
+            if (d.mode === 'zero' ? b === 0 : b >= 0x80) {
+                if (d.mode !== 'bit7') a++;
+                break;
+            }
+        }
+        return { end: a, resume: a };
+    }
     const inlineModeOk = (m) => m in INLINE_MODES || (/^\d+$/.test(m) && +m >= 1 && +m <= 255);
 
     const ALIASES = {
@@ -411,7 +432,7 @@
     function directiveString(d) {
         if (d.type === 'relocate') return `relocate ${specString(d)} $${hx(d.run)}`;
         if (d.type === 'bank') return `bank ${specString(d)} ${d.bank}`;
-        if (d.type === 'inline') return `inline ${specString(d)} ${d.mode}`;
+        if (d.type === 'inline') return `inline ${specString(d)} ${d.mode}${d.lead ? ' lead ' + d.lead : ''}${d.brk ? ' brk' : ''}`;
         if (d.type === 'hi' || d.type === 'lo') return `${d.type} ${specString(d)}${d.target !== undefined ? ' $' + hx(d.target) : ''}`;
         if (d.type === 'comment' || d.type === 'note' || d.type === 'operand') {
             const loc = (d.seg ? segText(d.seg) + ':' : '') + '$' + hx(d.addr);
@@ -450,14 +471,24 @@
             return d;
         }
         if (type === 'inline') {
-            // inline [name=][seg:]$ROUTINE MODE: each jsr to ROUTINE is
-            // followed by inline data; MODE is bit7, bit7last, zero or a
-            // byte count
-            const r = /^(\S+)\s+(\w+)$/.exec(m[2]);
-            if (!r || !inlineModeOk(r[2])) throw new Error(`Bad inline: ${m[2]} (expected e.g. inline $865C bit7; modes: ${Object.keys(INLINE_MODES).join(', ')} or a byte count)`);
+            // inline [name=][seg:]$ROUTINE MODE [lead N] [brk]: each jsr to
+            // ROUTINE is followed by inline data; MODE is bit7, bit7last,
+            // zero or a byte count. "lead N": the first N bytes are data
+            // whatever they are (e.g. an error number); "brk": a zero byte
+            // ends the text and the routine does not return (BRK errors).
+            const r = /^(\S+)\s+(\w+)(?:\s+lead\s+(\d+))?(\s+brk)?$/.exec(m[2]);
+            if (!r || !inlineModeOk(r[2])) throw new Error(`Bad inline: ${m[2]} (expected e.g. inline $865C bit7; modes: ${Object.keys(INLINE_MODES).join(', ')} or a byte count, then optionally lead N and brk)`);
             const d = parseSpec(type, r[1]);
             if (d.hi !== undefined || d.range) throw new Error('inline takes a single routine address');
             d.mode = r[2];
+            if (r[3] !== undefined) {
+                d.lead = +r[3];
+                if (d.lead < 1 || d.lead > 16 || /^\d+$/.test(d.mode)) throw new Error('inline: lead is 1-16 bytes, for text modes');
+            }
+            if (r[4]) {
+                if (!/^bit7/.test(d.mode)) throw new Error('inline: brk goes with bit7 or bit7last');
+                d.brk = true;
+            }
             return d;
         }
         if (type === 'hi' || type === 'lo') {
@@ -849,29 +880,20 @@
         // Mark the inline data after a jsr at `at` and return where execution
         // continues, or -1.
         function inlineData(cs, at, d) {
-            const a0 = at + 3;
-            const n = /^\d+$/.test(d.mode) ? +d.mode : 0;
-            let a = a0;
-            for (;; a++) {
-                if (n && a - a0 === n) break;
+            const r = scanInline(at, d, (a) => {
                 const sg = a <= 0xFFFF ? segAt(cs, a) : 0;
-                if (sg <= 0 || a - a0 > 255) {
-                    warn(`The inline data after jsr ${d.name || '$' + h4(d.addr)} at $${h4(at)} ` +
-                        (sg <= 0 ? 'runs into memory that is not loaded' : 'has no end within 256 bytes'), key(owner[at], at), d);
-                    return -1;
-                }
-                const b = byteAt(sg, a);
-                if (!n && (d.mode === 'zero' ? b === 0 : b >= 0x80)) {
-                    if (d.mode !== 'bit7') a++;
-                    break;
-                }
+                return sg > 0 ? byteAt(sg, a) : -1;
+            });
+            if (r.error) {
+                warn(`The inline data after jsr ${d.name || '$' + h4(d.addr)} at $${h4(at)} ${r.error}`, key(owner[at], at), d);
+                return -1;
             }
-            for (let x = a0; x < a; x++) {
+            for (let x = at + 3; x < r.end; x++) {
                 const T = S[segAt(cs, x) - 1];
                 const o = x - T.seg.start;
-                if (!T.fmt[o]) T.fmt[o] = n ? FMT.data : FMT.text;
+                if (!T.fmt[o]) T.fmt[o] = /^\d+$/.test(d.mode) ? FMT.data : FMT.text;
             }
-            return a;
+            return r.resume;
         }
 
         // a bank select by instruction op at address t ($D5xx)
@@ -1762,45 +1784,117 @@
             return out;
         }
 
-        // Find routines called with inline data after the jsr: they pull
-        // their return address into a pointer and read through it,
-        //   pla / sta P / pla / sta P+1 ... lda (P),y / bmi|bpl|beq|bne
-        // and guess how the data ends from the test and from how they return.
+        // Find routines called with inline data after the jsr: before
+        // touching the stack otherwise they pull their return address into
+        // a pointer, then read through it and test what they read,
+        //   ... pla / sta P / pla / sta P+1 ... lda (P),y / [sta ...] / bmi|bpl|beq|bne
+        // How the data ends comes from the tests and from how they return:
+        //   bmi/bpl: text up to a byte with bit 7 set; jmp (P) continues at
+        //            that byte (bit7), otherwise after it (bit7last)
+        //   beq/bne: text ending in a zero byte (zero); with bmi/bpl too, a
+        //            zero byte ends it without returning (brk, as in Acorn
+        //            error blocks)
+        //   reads before the tested one: bytes that are always data (lead)
+        // A wrapper that calls such a routine and then jumps into another
+        // one's entry (passing on its own caller's data) gets that one's
+        // convention.
         function findInlineRoutines() {
             const out = [];
-            const isJsr = (c) => typeof c === 'number' && segOf(c) &&
-                segOf(c).seg.data[keyAddr(c) - segOf(c).seg.start] === 0x20 && isCodeStart(c);
-            for (const T of S) {
+            // a jsr to address a (not a jsr whose data ends there)
+            const isJsrTo = (c, a) => {
+                if (typeof c !== 'number' || !segOf(c) || !isCodeStart(c)) return false;
+                const U = segOf(c), o = keyAddr(c) - U.seg.start, d = U.seg.data;
+                return d[o] === 0x20 && (d[o + 1] | (d[o + 2] << 8)) === a;
+            };
+            const entries = [];
+            for (const [k, r] of refs) {
+                if (keySeg(k) && isCodeStart(k) && !inlineAt.has(k) && r.callers.some((c) => isJsrTo(c, keyAddr(k)))) entries.push(k);
+            }
+            entries.sort((x, y) => x - y);
+            const indexOf = new Map();
+            const insAt = (T, a) => {
+                if (!indexOf.has(T)) indexOf.set(T, new Map(instructionsOf(T).map((x, n) => [x.a, n])));
+                return indexOf.get(T).get(a);
+            };
+            const NOFLAGS = /^(sta|stx|sty|pha|php|txs|clc|sec|cld|sed|cli|sei|clv|nop)$/;
+            const found = new Map();
+            for (const k of entries) {
+                const T = segOf(k);
                 const ins = instructionsOf(T);
-                for (let j = 0; j + 3 < ins.length; j++) {
-                    const [p1, s1, p2, s2] = ins.slice(j, j + 4);
-                    if (p1.op.mn !== 'pla' || p2.op.mn !== 'pla' || s1.op.mn !== 'sta' || s2.op.mn !== 'sta' ||
-                        s1.op.mode !== 'zp' || s2.op.mode !== 'zp' || s2.lo !== s1.lo + 1) continue;
-                    // contiguous instructions only
-                    if (s1.a !== p1.a + 1 || p2.a !== s1.a + 2 || s2.a !== p2.a + 1) continue;
-                    const k = key(T.seg.index, p1.a);
-                    const r = refs.get(k);
-                    if (inlineAt.has(k) || !r || !r.callers.some(isJsr)) continue;
-                    const P = s1.lo;
-                    let mode = null, jmpInd = false;
-                    for (let n = j + 4; n < Math.min(ins.length, j + 64); n++) {
-                        const x = ins[n];
-                        if (x.op.mn === 'jmp' && x.op.mode === 'ind' && x.w === P) jmpInd = true;
-                        if (!mode && x.op.mn === 'lda' && (x.op.mode === 'izy' || x.op.mode === 'izx') && x.lo === P && ins[n + 1]) {
-                            const b = ins[n + 1].op.mn;
-                            mode = b === 'bmi' || b === 'bpl' ? 'bit7' : b === 'beq' || b === 'bne' ? 'zero' : null;
-                        }
-                    }
-                    if (!mode) continue;
-                    if (mode === 'bit7' && !jmpInd) mode = 'bit7last';
-                    const l = labelAt(k);
-                    out.push({
-                        at: k,
-                        dir: { type: 'inline', name: null, seg: cover[p1.a] > 1 ? T.seg.index : 0, addr: p1.a, range: 0, mode },
-                        msg: `${l ? l.name : '$' + h4(p1.a)} pulls its return address and reads the bytes after the jsr: ` +
-                            `probably inline ${mode === 'zero' ? 'text ending in a zero byte' : 'text'} after each call — click to review`,
-                    });
+                const j = insAt(T, keyAddr(k));
+                if (j === undefined) continue;
+                // straight-line code to the pull, leaving the stack alone
+                let pop = -1;
+                for (let n = j; n < Math.min(ins.length - 3, j + 40); n++) {
+                    const x = ins[n];
+                    if (n > j && x.a !== ins[n - 1].a + ins[n - 1].op.len) break;
+                    const [s1, p2, s2] = [ins[n + 1], ins[n + 2], ins[n + 3]];
+                    if (x.op.mn === 'pla' && s1.op.mn === 'sta' && p2.op.mn === 'pla' && s2.op.mn === 'sta' &&
+                        s1.op.mode === 'zp' && s2.op.mode === 'zp' && s2.lo === s1.lo + 1 &&
+                        s1.a === x.a + 1 && p2.a === s1.a + 2 && s2.a === p2.a + 1) { pop = n; break; }
+                    if (/^(pha|php|pla|plp|rts|rti|tsx|txs|brk|jmp)$/.test(x.op.mn)) break;
                 }
+                if (pop < 0) continue;
+                const P = ins[pop + 1].lo;
+                let tested = null, lead = 0, jmpInd = false;
+                for (let n = pop + 4; n < Math.min(ins.length, pop + 68); n++) {
+                    const x = ins[n];
+                    if (x.op.mn === 'jmp' && x.op.mode === 'ind' && x.w === P) jmpInd = true;
+                    if (tested || x.op.mn !== 'lda' || (x.op.mode !== 'izy' && x.op.mode !== 'izx') || x.lo !== P) continue;
+                    const tests = new Set();
+                    for (let m = n + 1; m < Math.min(ins.length, n + 6); m++) {
+                        const y = ins[m];
+                        if (y.op.branch) tests.add(y.op.mn);
+                        else if (!NOFLAGS.test(y.op.mn)) break;
+                    }
+                    const bits = tests.has('bmi') || tests.has('bpl'), zeros = tests.has('beq') || tests.has('bne');
+                    if (bits || zeros) tested = { bits, zeros };
+                    else lead++;
+                }
+                if (!tested) continue;
+                const dir = { type: 'inline', name: null, seg: cover[keyAddr(k)] > 1 ? T.seg.index : 0, addr: keyAddr(k), range: 0,
+                    mode: tested.bits ? (jmpInd ? 'bit7' : 'bit7last') : 'zero' };
+                if (lead && lead <= 16) dir.lead = lead;
+                if (tested.bits && tested.zeros) dir.brk = true;
+                found.set(k, { dir, how: 'pulls its return address and reads the bytes after the jsr' });
+            }
+            // wrappers: jsr R (inline), then a jump into an inline entry E
+            for (const k of entries) {
+                if (found.has(k)) continue;
+                const T = segOf(k), a = keyAddr(k), o = a - T.seg.start;
+                if (T.seg.data[o] !== 0x20) continue;
+                const conv = (t) => {
+                    const tk = key(segFor(T, t), t);
+                    return inlineAt.get(tk) || (found.get(tk) || {}).dir;
+                };
+                const dR = conv(T.seg.data[o + 1] | (T.seg.data[o + 2] << 8));
+                if (!dR) continue;
+                const read = (x) => {
+                    const s = segFor(T, x);
+                    const U = s && S[s - 1];
+                    return U && x >= U.seg.start && x <= U.seg.end ? U.seg.data[x - U.seg.start] : -1;
+                };
+                const r = scanInline(a, dR, read);
+                if (r.error || r.resume < 0) continue;
+                const op = OPS[read(r.resume)];
+                const lo = read(r.resume + 1);
+                const t = op.branch ? (r.resume + 2 + (lo < 128 ? lo : lo - 256)) & 0xFFFF
+                    : op.mn === 'jmp' && op.mode === 'abs' ? lo | (read(r.resume + 2) << 8) : -1;
+                const dE = t >= 0 && conv(t);
+                if (!dE) continue;
+                const dir = Object.assign({}, dE, { name: null, seg: cover[a] > 1 ? T.seg.index : 0, addr: a, range: 0 });
+                found.set(k, { dir, how: `adds its own text and passes the data after its jsr on to $${h4(t)}` });
+            }
+            for (const [k, f] of found) {
+                const l = labelAt(k);
+                const d = f.dir;
+                const what = d.mode === 'zero' ? 'text ending in a zero byte' : 'text up to a byte with bit 7 set';
+                out.push({
+                    at: k, dir: d,
+                    msg: `${l ? l.name : '$' + h4(d.addr)} ${f.how}: probably inline ${what}` +
+                        `${d.lead ? `, after ${d.lead} byte${d.lead > 1 ? 's' : ''} that ${d.lead > 1 ? 'are' : 'is'} always data` : ''}` +
+                        `${d.brk ? ' (a zero byte raises an error instead)' : ''} after each call — click to review`,
+                });
             }
             return out;
         }

@@ -195,11 +195,21 @@ the data at every call:
     inline $865C zero       ; text ending in a zero byte; continues after it
     inline $865C 2          ; a fixed number of bytes (1-255)
 
+Two options follow the mode. `lead N` makes the first N bytes data whatever
+they are, such as an error number. `brk` means a zero byte ends the text and the
+routine doesn't return, as in Acorn error routines that build a BRK error block:
+
+    inline $9FB8 bit7 lead 1 brk
+
 The data after each call becomes `dta`, and tracing continues where the routine
 returns. Choose *Inline data after calls…* from the right-click menu on a `jsr`
-or on the routine itself. Routines that start with `pla` / `sta P` / `pla` /
-`sta P+1` and then read `(P),y` are suggested in Problems. The test after the
-read (`bmi` or `beq`) and a final `jmp (P)` suggest which form applies.
+or on the routine itself. Routines called by `jsr` that pull their return
+address (`pla` / `sta P` / `pla` / `sta P+1`) before touching the stack
+otherwise, and then read `(P),y`, are suggested in Problems. The tests after
+the read (`bmi`, `beq`, or both for `brk`), earlier reads (`lead`) and a final
+`jmp (P)` suggest which form applies. A wrapper that calls such a routine with
+text of its own and then jumps into one, passing on its caller's data, is
+suggested with the same form once the routine it calls is known.
 
 Jump tables
 -----------

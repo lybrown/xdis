@@ -826,7 +826,8 @@
         const sc = scopeSeg(seg, addr);
         const same = (d) => d.type === 'inline' && d.addr === addr && (d.seg || 0) === sc;
         const cur = S.project.directives.find(same);
-        let mode = problem ? problem.suggest.mode : cur ? cur.mode : 'bit7';
+        const base = problem ? problem.suggest : cur || {};
+        let mode = base.mode || 'bit7';
         const l = S.model.labelAt(rk);
         const name = l && !l.off ? l.name : '$' + X.h4(addr);
         const fixed = /^\d+$/.test(mode);
@@ -837,9 +838,19 @@
             <label><input type="radio" name="im" value="n" ${fixed ? 'checked' : ''}> A fixed number of bytes:
                 <input type="number" id="im-n" min="1" max="255" value="${fixed ? mode : 2}" style="width:5em"></label>
             ${cur ? '<label><input type="radio" name="im" value=""> None: an ordinary routine</label>' : ''}</div>
+            <div class="opts">
+            <label>Bytes before the text that are always data (e.g. an error number):
+                <input type="number" id="im-lead" min="0" max="16" value="${base.lead || 0}" style="width:4em"></label>
+            <label><input type="checkbox" id="im-brk" ${base.brk ? 'checked' : ''}> A zero byte ends the text and the routine doesn't return (a BRK error)</label></div>
             <p class="dim">Adds <code id="im-dir"></code></p>`;
-        const dirFor = (m) => ({ type: 'inline', name: null, seg: sc, addr, range: 0, mode: m });
-        let pick = mode;
+        const dirFor = (m) => {
+            const d = { type: 'inline', name: null, seg: sc, addr, range: 0, mode: m };
+            const lead = Math.max(0, Math.min(16, +$('im-lead').value || 0));
+            if (lead && !/^\d+$/.test(m)) d.lead = lead;
+            if ($('im-brk').checked && /^bit7/.test(m)) d.brk = true;
+            return d;
+        };
+        let pick = mode, picked = null;
         const btn = await dialog('Inline data after calls', body,
             (problem ? [{ label: 'Dismiss', value: 'dismiss' }] : []).concat(
                 [{ label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]), (dlg) => {
@@ -847,7 +858,8 @@
                     const r = dlg.querySelector('input[name=im]:checked');
                     const n = Math.max(1, Math.min(255, +$('im-n').value || 1));
                     pick = !r ? mode : r.value === 'n' ? String(n) : r.value;
-                    $('im-dir').textContent = pick ? X.directiveString(dirFor(pick)) : '(removes the inline directive)';
+                    picked = pick ? dirFor(pick) : null;
+                    $('im-dir').textContent = picked ? X.directiveString(picked) : '(removes the inline directive)';
                 };
                 dlg.querySelectorAll('input').forEach((x) => x.addEventListener('input', upd));
                 $('im-n').addEventListener('focus', () => { dlg.querySelector('input[value=n]').checked = true; upd(); });
@@ -858,8 +870,8 @@
         if (btn !== 'ok') return;
         commit((p) => {
             p.directives = p.directives.filter((d) => !same(d));
-            if (pick) p.directives.push(dirFor(pick));
-        }, pick ? `Added ${X.directiveString(dirFor(pick))}` : `${name} has no inline data`);
+            if (picked) p.directives.push(picked);
+        }, picked ? `Added ${X.directiveString(picked)}` : `${name} has no inline data`);
     }
 
     // Is the operand of instruction line ln in a cartridge bank window?

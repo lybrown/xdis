@@ -100,6 +100,29 @@ const cases = [
             { name: 'inline-bit7', type: 'prg', bytes, pointers: true, expect: ["dta c'HI'", 'lda #$00'] },
         ];
     })(),
+    // an Acorn-style error routine: an error number, then text up to a byte
+    // with bit 7 set (the next instruction) or a zero (raises the error);
+    // a wrapper adds "Disk " and passes its caller's data on
+    ...(() => {
+        const b = new Uint8Array(0x086B - 0x0801 + 2);
+        const put = (a, bytes) => b.set(bytes, a - 0x0801 + 2);
+        b.set([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0]);
+        put(0x080D, [0x20, 0x30, 0x08, 0xC7, 0x4F, 0x4B, 0xA9, 0x00,          // jsr err / $C7 "OK" / lda #0
+            0x20, 0x60, 0x08, 0x01, 0x46, 0x75, 0x6C, 0x6C, 0xA2, 0x00,          // jsr disk / $01 "Full" / ldx #0
+            0x20, 0x30, 0x08, 0x05, 0x42, 0x41, 0x44, 0x00]);                    // jsr err / $05 "BAD" $00
+        put(0x0830, [0x68, 0x85, 0xFB, 0x68, 0x85, 0xFC, 0xA0, 0x00,          // err: pla sta $FB pla sta $FC ldy #0
+            0x20, 0x50, 0x08, 0xB1, 0xFB, 0x8D, 0x01, 0x01,                      // jsr inc / lda ($FB),y / sta $0101
+            0x20, 0x50, 0x08, 0xB1, 0xFB, 0x8D, 0x02, 0x01,                      // loop: jsr inc / lda ($FB),y / sta $0102
+            0x30, 0x03, 0xD0, 0xF4, 0x00, 0x6C, 0xFB, 0x00]);                    // bmi out / bne loop / brk / out: jmp ($FB)
+        put(0x0850, [0xE6, 0xFB, 0xD0, 0x02, 0xE6, 0xFC, 0x60]);              // inc: inc $FB / bne / inc $FC / rts
+        put(0x0860, [0x20, 0x30, 0x08, 0x00, 0x44, 0x69, 0x73, 0x6B, 0x20, 0x90, 0xC5]);   // disk: jsr err / $00 "Disk " / bcc err
+        return [
+            { name: 'inline-error-suggest', type: 'prg', bytes: b,
+                problems: [/l0830 pulls its return address and reads the bytes after the jsr: probably inline text up to a byte with bit 7 set, after 1 byte that is always data \(a zero byte raises an error instead\)/] },
+            { name: 'inline-error', type: 'prg', bytes: b, pointers: true,
+                expect: ["dta $C7,c'OK'", 'lda #$00', "dta $01,c'Full'", 'ldx #$00', "dta $05,c'BAD',$00", "dta $00,c'Disk '", 'bcc l0830'] },
+        ];
+    })(),
     {
         // inline zero-terminated text, a fixed byte count and bit-7-last text
         name: 'inline-modes', type: 'prg', directives: ['inline $081E zero', 'inline $081F 2', 'inline $0820 bit7last'],
