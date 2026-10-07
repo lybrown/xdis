@@ -313,20 +313,69 @@
         return [Math.min(S.anchor, S.cur), Math.max(S.anchor, S.cur)];
     }
 
+    // The listing is virtual: only the rows around the visible ones exist.
+    // A screen's worth is drawn above and below, so scrolling (which the
+    // browser does before telling us) mostly lands on rows already there.
+    const drawn = { first: 0, last: 0, listing: null };
     function draw() {
         const el = $('listing');
         const rows = $('rows');
         if (!S.listing) return;
         const L = S.listing.lines;
-        const first = Math.max(0, Math.floor(el.scrollTop / LH) - 4);
-        const last = Math.min(L.length, Math.ceil((el.scrollTop + el.clientHeight) / LH) + 4);
+        const page = Math.ceil(el.clientHeight / LH);
+        const top = Math.floor(el.scrollTop / LH);
+        const first = Math.max(0, top - page);
+        const last = Math.min(L.length, top + 2 * page + 1);
         const [lo, hi] = selLines();
         let html = '';
         for (let i = first; i < last; i++) html += rowHtml(L[i], i, i === S.cur, i >= lo && i <= hi && lo !== hi);
         rows.style.top = first * LH + 'px';
         rows.innerHTML = html;
+        Object.assign(drawn, { first, last, listing: S.listing });
+        syncBar();
         updatePos();
         drawViewport();
+    }
+
+    // Keep the scrollbar (#vbar) the listing's height and at its position.
+    // barSeen is where we last put the bar, or followed it to: a bar scroll
+    // event there is our own, and a bar moved since is the user's, which
+    // its scroll event applies (so don't overwrite it here).
+    let barSeen = 0;
+    function syncBar() {
+        const el = $('listing'), bar = $('vbar');
+        const h = el.scrollHeight - el.clientHeight + bar.clientHeight;
+        if ($('vbar-spacer').style.height !== h + 'px') $('vbar-spacer').style.height = h + 'px';
+        if (Math.abs(bar.scrollTop - barSeen) >= 1) return;
+        if (Math.abs(bar.scrollTop - el.scrollTop) >= 1) bar.scrollTop = el.scrollTop;
+        barSeen = bar.scrollTop;
+    }
+
+    // Scroll the listing to y and draw what that needs at once, as one change.
+    function scrollListing(y) {
+        const el = $('listing');
+        const before = el.scrollTop;
+        el.scrollTop = y;
+        if (el.scrollTop !== before || drawn.listing !== S.listing) scrolled();
+    }
+
+    // After a scroll: redraw only when the visible rows are near the edge of
+    // the drawn ones (or past it), but always move the box on the map.
+    function scrolled() {
+        const el = $('listing');
+        if (!S.listing) return;
+        const page = Math.ceil(el.clientHeight / LH);
+        const top = Math.floor(el.scrollTop / LH);
+        const margin = Math.floor(page / 2);
+        const covered = drawn.listing === S.listing &&
+            (top - drawn.first >= margin || drawn.first === 0) &&
+            (drawn.last - (top + page) >= margin || drawn.last >= S.listing.lines.length);
+        if (covered) {
+            syncBar();
+            drawViewport();
+        } else {
+            draw();
+        }
     }
 
     // Raw bytes column; each byte can be clicked to pick it.
@@ -2568,8 +2617,43 @@
 
     function bind() {
         const lst = $('listing');
-        lst.addEventListener('scroll', () => requestAnimationFrame(draw), { passive: true });
+        // Redraw just after the scroll event, once however many arrive.
+        // (Redrawing inside the event itself made Chrome close an open dialog
+        // now and then; a frame callback may not run in a hidden frame.)
+        let scrollPending = false;
+        lst.addEventListener('scroll', () => {
+            if (scrollPending) return;
+            scrollPending = true;
+            setTimeout(() => { scrollPending = false; scrolled(); }, 0);
+        }, { passive: true });
         new ResizeObserver(() => { draw(); drawMap(); }).observe(lst);
+        // the scrollbar, the wheel and touch drags move the listing ourselves
+        const bar = $('vbar');
+        // just wide enough for the native scrollbar (overlay scrollbars
+        // take no room: give them some)
+        bar.style.width = '100px';
+        bar.style.width = (bar.offsetWidth - bar.clientWidth || 12) + 'px';
+        bar.addEventListener('scroll', () => {
+            if (Math.abs(bar.scrollTop - barSeen) < 1) return;        // where we put it
+            barSeen = bar.scrollTop;
+            scrollListing(barSeen);
+        }, { passive: true });
+        lst.addEventListener('wheel', (e) => {
+            if (e.ctrlKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;     // zoom, sideways
+            e.preventDefault();
+            const unit = e.deltaMode === 1 ? LH : e.deltaMode === 2 ? lst.clientHeight : 1;
+            scrollListing(lst.scrollTop + e.deltaY * unit);
+        }, { passive: false });
+        let touchY = null;
+        lst.addEventListener('touchstart', (e) => { touchY = e.touches.length === 1 ? e.touches[0].clientY : null; }, { passive: true });
+        lst.addEventListener('touchmove', (e) => {
+            if (touchY === null || e.touches.length !== 1) return;
+            const y = e.touches[0].clientY;
+            if (Math.abs(y - touchY) < 1) return;
+            e.preventDefault();
+            scrollListing(lst.scrollTop + touchY - y);
+            touchY = y;
+        }, { passive: false });
 
         let dragging = false;
         $('rows').addEventListener('mousedown', (e) => {

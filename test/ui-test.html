@@ -364,6 +364,30 @@ function check(name, ok, detail) {
         log('skip', 'no jsr found');
     }
 
+    // 10a0. scrolling: the scrollbar beside the listing drives it, drawing
+    // the rows at once; the wheel scrolls it; the bar follows other moves
+    {
+        const lst = doc.getElementById('listing'), bar = doc.getElementById('vbar');
+        const rowsEl = doc.getElementById('rows');
+        const at = (y) => Math.floor(y / 18);
+        check('the listing does not scroll by itself', w.getComputedStyle(lst).overflowY === 'hidden' && bar.scrollHeight > bar.clientHeight);
+        bar.scrollTop = 9000;
+        bar.dispatchEvent(new w.Event('scroll'));
+        check('dragging the scrollbar moves the listing and draws it at once', lst.scrollTop === bar.scrollTop &&
+            !!rowsEl.querySelector(`.row[data-i="${at(lst.scrollTop)}"]`) &&
+            !!rowsEl.querySelector(`.row[data-i="${at(lst.scrollTop) + Math.ceil(lst.clientHeight / 18)}"]`), `${lst.scrollTop} / ${bar.scrollTop}`);
+        const firstRow = rowsEl.firstElementChild, y0 = lst.scrollTop;
+        const wheel = new w.WheelEvent('wheel', { deltaY: 3, deltaMode: 1, bubbles: true, cancelable: true });
+        lst.dispatchEvent(wheel);
+        check('the wheel scrolls three lines', lst.scrollTop === y0 + 54 && bar.scrollTop === lst.scrollTop && wheel.defaultPrevented, `${y0} -> ${lst.scrollTop}`);
+        check('a small scroll keeps the drawn rows', rowsEl.firstElementChild === firstRow);
+        key('Home');
+        await sleep(20);
+        check('the scrollbar follows other moves', lst.scrollTop === 0 && bar.scrollTop === 0, `${lst.scrollTop} / ${bar.scrollTop}`);
+        bar.dispatchEvent(new w.Event('scroll'));
+        check('a stale scrollbar event changes nothing', lst.scrollTop === 0);
+    }
+
     // 10b0. jump between sections of code and data
     {
         const L = S.listing.lines;
@@ -652,11 +676,12 @@ function check(name, ok, detail) {
         const r0 = usedRows2[0], n0 = r0.querySelectorAll('td')[1].textContent.replace('● ', '');
         r0.querySelectorAll('td')[3].click();
         await sleep(20);
-        check('clicking elsewhere in a row keeps the viewer open', d2.getElementById('dlg').open);
+        check('clicking elsewhere in a row keeps the viewer open', d2.getElementById('dlg').open, `${n0} td3 "${r0.querySelectorAll('td')[3].textContent}"`);
         d2.querySelector(`#sv-table [data-symrow="${r0.dataset.symrow}"] .cbcell`).click();
         await sleep(20);
         check('clicking beside the checkbox toggles it', d2.getElementById('dlg').open &&
-            (S2.project.includes.find((i) => i.name === 'sys.dop').off || []).includes(n0));
+            (S2.project.includes.find((i) => i.name === 'sys.dop').off || []).includes(n0),
+            `open ${d2.getElementById('dlg').open}, ${n0}, off: ${(S2.project.includes.find((i) => i.name === 'sys.dop').off || []).join(' ')}`);
         d2.querySelector(`#sv-table [data-symrow="${r0.dataset.symrow}"] .cbcell`).click();
         await sleep(20);
         check('and back', !(S2.project.includes.find((i) => i.name === 'sys.dop').off || []).includes(n0));
