@@ -321,6 +321,9 @@ test file. Where xdis intentionally differs:
   byte become `:N dta $XX`. Optionally (*Repeat patterns up to* under
   *Project*), repeated patterns become `:N dta $XX,$YY,...` too.
 * Pointer tables and vectors are shown as `dta a(label)`.
+* On the BBC Micro, a `brk` followed by an error block (an error number, a
+  printable message and a zero) is traced as `brk` and ends the path, with the
+  block shown as `dta $FC,c'Bad address',$00`. The CLI stops at every `brk`.
 * A plain label inside a data range overrides the range's `name+N` instead of
   being dropped as a duplicate.
 * An equate's `Access:` and `Callers:` comment includes references to every

@@ -233,6 +233,23 @@ const cases = [
                 problems: [/Possible code at \$080E-\$081F that nothing traces into/] },
         ];
     })(),
+    // Acorn BRK errors: brk, an error number, a message and a zero end a
+    // path; the tracer marks them and the code finder steps over them
+    ...(() => {
+        const brk = new Uint8Array(0x20);
+        brk.set([0xA2, 0x03, 0xCA, 0xD0, 0xFD, 0xA9, 0x00, 0xC9, 0x05, 0x90, 0x06,   // ldx #3 / dex / bne / lda #0 / cmp #5 / bcc ok
+            0x00, 0xFC, 0x42, 0x61, 0x64, 0x00,                                     // brk / $FC "Bad" $00
+            0x8D, 0x00, 0x70, 0x60]);                                               // ok: sta $7000 / rts
+        brk[0x18] = 0x60;                                                           // another routine: rts
+        return [
+            { name: 'brk-error', type: 'raw', org: 0x1900, bytes: brk, include: ['symbols/bbcmos.dop'], directives: ['code $1900'],
+                expect: ['    brk', "dta $FC,c'Bad',$00", 'sta l7000'] },
+            { name: 'brk-error-mads', type: 'raw', org: 0x1900, bytes: brk, include: ['symbols/bbcmos.dop'], directives: ['code $1900'],
+                options: { syntax: 'mads' }, mads: true, expect: ['    brk'] },
+            { name: 'brk-error-gap', type: 'raw', org: 0x1900, bytes: brk, include: ['symbols/bbcmos.dop'], directives: ['code $1918'],
+                problems: [/Possible code at \$1900-\$1914 that nothing traces into/] },
+        ];
+    })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests

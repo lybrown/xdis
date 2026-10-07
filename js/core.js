@@ -843,6 +843,31 @@
         // with known immediates in the registers. A window selection is a
         // segment, -1 (switched off) or UNKNOWN; undefined means whatever the
         // analysis order put there (the power-on banks in the final pass).
+        // The machine, from the file type or the symbol sets in use
+        const platform = (() => {
+            const sets = directives.map((d) => String(d.from || ''));
+            if (img.type === 'prg' || sets.some((f) => /(6510|vic|sid|cia)\.dop$/.test(f))) return 'c64';
+            if (sets.some((f) => /bbc/i.test(f))) return 'bbc';
+            if (['xex', 'sap', 'car', 'cart'].includes(img.type) ||
+                sets.some((f) => /(hardware|sys|atarixl|atarifp|basic|dos)\.dop$/.test(f))) return 'atari';
+            return null;
+        })();
+
+        // Acorn BRK errors: brk, an error number, a message, then a zero.
+        // The end of the block (exclusive), or -1 if the bytes after the brk
+        // at `at` aren't one. read(a) returns a byte or -1.
+        const acornBrk = platform === 'bbc';
+        function errorBlock(at, read) {
+            if (read(at + 1) < 0) return -1;
+            let a = at + 2, n = 0;
+            for (; n < 256; a++, n++) {
+                const b = read(a);
+                if (b === 0) break;
+                if (b < 0x20 || b > 0x7E) return -1;
+            }
+            return n && read(a) === 0 ? a + 1 : -1;
+        }
+
         const SW = img.bankSwitch || null;
         const UNKNOWN = -2;
         const winOf = (a) => {
@@ -926,6 +951,17 @@
                     const s = segAt(cs, i);
                     if (s <= 0) break;                         // unloaded, switched off or unknown bank
                     const op = OPS[byteAt(s, i)];
+                    if (op.code === 0 && acornBrk) {
+                        // a BRK error: the brk is code, the error block data
+                        const T = S[s - 1];
+                        const off = i - T.seg.start;
+                        const e = !T.fmt[off] && errorBlock(i, (x) => (x <= T.seg.end ? T.seg.data[x - T.seg.start] : -1));
+                        if (e > 0) {
+                            T.ilen[off] = 1;
+                            for (let x = off + 1; x < e - T.seg.start; x++) if (!T.fmt[x]) T.fmt[x] = FMT.text;
+                        }
+                        break;
+                    }
                     if (op.code === 0 || op.jam || (op.illegal && !opts.illegal)) break;
                     const vk = key(s, i);
                     if (visited.has(vk)) break;
@@ -1172,15 +1208,6 @@
         // suggestions dismissed with "dismiss $ADDR" (the address they point at)
         const dismissed = new Set(directives.filter((d) => d.type === 'dismiss').map((d) => key(resolveSeg(d, d.addr), d.addr)));
         const keep = (sg) => !dismissed.has(sg.at);
-        // The machine, from the file type or the symbol sets in use
-        const platform = (() => {
-            const sets = directives.map((d) => String(d.from || ''));
-            if (img.type === 'prg' || sets.some((f) => /(6510|vic|sid|cia)\.dop$/.test(f))) return 'c64';
-            if (sets.some((f) => /bbc/i.test(f))) return 'bbc';
-            if (['xex', 'sap', 'car', 'cart'].includes(img.type) ||
-                sets.some((f) => /(hardware|sys|atarixl|atarifp|basic|dos)\.dop$/.test(f))) return 'atari';
-            return null;
-        })();
         // suggest: false skips the detectors (when only the traced code matters)
         const suggesting = opts.suggest !== false;
         const insCache = new Map();      // segment -> its traced instructions
@@ -1420,6 +1447,18 @@
                             break;
                         }
                         const op = OPS[data[o]];
+                        if (op.code === 0 && acornBrk) {
+                            // a BRK error ends this path, like rts
+                            const e = errorBlock(start + o, (x) => (x - start < len && !busy[x - start] ? data[x - start] : -1));
+                            if (e > 0) {
+                                starts.add(o);
+                                n++;
+                                score += 2;
+                                o = e - start;
+                                if (o > far) break;
+                                continue;
+                            }
+                        }
                         if (op.code === 0 || op.jam || (op.illegal && !opts.illegal) || o + op.len > len ||
                             [1, 2].some((x) => x < op.len && busy[o + x])) {
                             if (endsHere()) break;
@@ -1464,7 +1503,7 @@
                         if (!starts.has(t - start) && !codeAt(t) && !blockAt(t)) return null;
                     }
                     if (score < 0) return null;
-                    return { end: o, n, score };
+                    return { end: o, n, score, starts };
                 };
                 for (let c = 0; c < len; c++) {
                     if (busy[c] || !startsCode[data[c]]) continue;
@@ -1475,12 +1514,20 @@
                     };
                     let b = strict(c);
                     if (!b) continue;
-                    // data just before code can decode into it: of the starts
-                    // that end in the same place, keep the best scoring one
+                    // data just before code can decode into it: of the later
+                    // starts that end in the same place, keep one that scores
+                    // clearly better (real code may start with rare
+                    // instructions too, more likely right after a routine ends)
+                    const after = (x) => {
+                        const op = (y) => (y >= 0 && T.ilen[y] ? OPS[data[y]] : null);
+                        const p1 = op(x - 1), p3 = op(x - 3);
+                        return !!(p1 && (p1.mn === 'rts' || p1.mn === 'rti')) || !!(p3 && p3.mn === 'jmp');
+                    };
+                    const margin = after(c) ? 4 : 2;
                     for (let c2 = c + 1; c2 < Math.min(b.end, c + 32); c2++) {
                         if (busy[c2] || !startsCode[data[c2]]) continue;
                         const b2 = strict(c2);
-                        if (b2 && b2.end === b.end && b2.score > b.score) {
+                        if (b2 && b2.end === b.end && b2.score > b.score + margin) {
                             b = b2;
                             c = c2;
                         }
