@@ -2836,12 +2836,13 @@
     // drops the ones already found removable. Work is done one directive per
     // step() so callers can spread it out; step() returns {d, removable} or
     // null when finished.
-    function redundancyScan(img, project, model) {
+    // `only` limits the candidates (the rest always stay).
+    function redundancyScan(img, project, model, only) {
         const all = allDirectives(project);
         const rank = (d) => (d.name ? 1 : 0) + (POINTER_TYPES.includes(d.type) ? 2 : 0);
         const order = project.directives
             .map((d, i) => [d, i])
-            .filter(([d]) => TRACE_TYPES.includes(d.type))
+            .filter(([d]) => TRACE_TYPES.includes(d.type) && (!only || only(d)))
             .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1])
             .map(([d]) => d);
         const removed = new Set();

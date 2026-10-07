@@ -86,6 +86,7 @@
       <input id="dir-add" type="text" placeholder="Add: code start=$2000 · data tbl=$3000+FF · …" autocomplete="off" spellcheck="false">
       <input id="dir-filter" type="search" placeholder="Filter directives…" autocomplete="off">
       <label class="dim" title="Directives that can be removed together without changing which bytes are traced as code"><input type="checkbox" id="dir-unneeded"> Only show directives not needed for tracing</label>
+      <p id="prune-row" hidden><button id="btn-prune" class="small" title="Remove every directive tagged &quot;no effect&quot;: code and data directives without a name that tracing finds anyway">Remove directives with no effect</button></p>
       <div id="dir-list" class="list mono"></div>
     </div>
     <div class="panel" id="tab-project" hidden></div>

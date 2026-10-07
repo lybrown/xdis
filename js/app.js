@@ -172,6 +172,32 @@
         if (sc && sc.done() < sc.total) t += ` · checking ${sc.done()}/${sc.total}…`;
         else if (unneeded) t += ` · ${unneeded} not needed for tracing`;
         $('dir-count').textContent = t;
+        // removing is offered once the scan is done
+        let none = 0;
+        for (const st of (S.dirState || new Map()).values()) if (st === 'none') none++;
+        $('prune-row').hidden = !none || !sc || sc.done() < sc.total;
+        $('btn-prune').textContent = `Remove ${none} directive${none > 1 ? 's' : ''} with no effect`;
+    }
+
+    // Remove the directives tagged "no effect". The scan decided each one
+    // together with the name-only and format-only ones before it, so check
+    // that removing just these keeps the code; if not, try them one by one.
+    function pruneDirectives() {
+        const p = S.project;
+        let drop = new Set(p.directives.filter((d) => S.dirState && S.dirState.get(d) === 'none'));
+        if (!drop.size || !S.model) return;
+        const quiet = Object.assign({}, p.options, { suggest: false });
+        const without = (set) => X.allDirectives(Object.assign({}, p, { directives: p.directives.filter((d) => !set.has(d)) }));
+        if (!X.sameCode(S.model, X.analyze(S.img, without(drop), quiet))) {
+            const sc = X.redundancyScan(S.img, p, S.model, (d) => drop.has(d));
+            const keep = new Set();
+            let r;
+            while ((r = sc.step())) if (r.removable) keep.add(r.d);
+            drop = keep;
+        }
+        if (!drop.size) return setStatus('Nothing to remove', true);
+        commit((pr) => { pr.directives = pr.directives.filter((d) => !drop.has(d)); },
+            `Removed ${drop.size} directive${drop.size > 1 ? 's' : ''} with no effect`);
     }
 
     function updateAll() {
@@ -2704,6 +2730,7 @@
         $('label-filter').addEventListener('input', updateLabels);
         $('dir-filter').addEventListener('input', updateDirectives);
         $('dir-unneeded').addEventListener('change', updateDirectives);
+        $('btn-prune').addEventListener('click', pruneDirectives);
         // One or more directives in dis option syntax, one per line, added as
         // a single undoable change. Relocations move directives as usual.
         const addDirectivesText = (v) => {

@@ -161,7 +161,10 @@ are tagged *no effect*, *name only* (a plain label would do) or *format only*
 (it only changes how bytes are shown). All tagged directives can be removed
 **together** without changing what gets traced; the check is greedy, so when
 two directives make each other redundant only one of them is tagged. Tick
-*Only show directives not needed for tracing* to review them.
+*Only show directives not needed for tracing* to review them. Once the check
+has finished, *Remove N directives with no effect* deletes the *no effect* ones
+in one undoable step. *Name only* and *format only* directives stay, because
+they change the output.
 
 Relocated code
 --------------

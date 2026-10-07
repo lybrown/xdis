@@ -304,6 +304,18 @@ function check(name, ok, detail) {
     check('tag rendered', !!doc.querySelector('#dir-list .tag-none'));
     check('count mentions unneeded', /not needed for tracing/.test(doc.getElementById('dir-count').textContent));
     doc.getElementById('dir-unneeded').click();
+    const prune = doc.getElementById('btn-prune');
+    check('remove button offered', !doc.getElementById('prune-row').hidden && /^Remove \d+ directives? with no effect$/.test(prune.textContent), prune.textContent);
+    const codeBefore = S.model.S.map((T) => Array.from(T.ilen).join()).join('|');
+    const noneCount = [...S.dirState.values()].filter((st) => st === 'none').length;
+    const nBefore = S.project.directives.length;
+    prune.click();
+    await sleep(50);
+    check('no-effect directives removed', S.project.directives.length === nBefore - noneCount && !S.project.directives.includes(extra),
+        `${nBefore} -> ${S.project.directives.length}, ${noneCount} no effect`);
+    check('code unchanged after removing', S.model.S.map((T) => Array.from(T.ilen).join()).join('|') === codeBefore);
+    key('z', { ctrlKey: true });
+    check('removing is undoable', S.project.directives.length === nBefore);
     doc.querySelector('[data-tab=inspect]').click();
     key('z', { ctrlKey: true });
 
