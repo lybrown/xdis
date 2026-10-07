@@ -264,6 +264,26 @@ function check(name, ok, detail) {
     doc.querySelector('[data-tab=inspect]').click();
     check('undo removes the test directives', !S.project.directives.some((d) => d.name === 'dupname' || d.seg === 99));
 
+    // 9f2. a structure suggestion (the display list) is reviewed and applied
+    doc.querySelector('[data-tab=problems]').click();
+    const dlP = Array.from(doc.querySelectorAll('#problem-list .problem')).find((p) => /^×?Display list at/.test(p.textContent));
+    check('display list suggested', !!dlP, dlP && dlP.textContent);
+    if (dlP) {
+        const nDirs = S.project.directives.length;
+        const sug = S.problems[+dlP.dataset.prob];
+        dlP.click();
+        await sleep(30);
+        check('structure dialog lists its directives', doc.getElementById('dlg').open &&
+            doc.querySelector('#dlg-body pre').textContent.split('\n').length === sug.dirs.length, doc.querySelector('#dlg-body pre') && doc.querySelector('#dlg-body pre').textContent);
+        doc.querySelector('#dlg button[value=ok]').click();
+        await sleep(50);
+        check('structure suggestion adds all its directives', S.project.directives.length === nDirs + sug.dirs.length);
+        check('display list shows its addresses', w.XDis.asmText(S.listing, S.project.options).includes('dta a(lACB8)'));
+        key('z', { ctrlKey: true });
+        check('structure suggestion undoable', S.project.directives.length === nDirs);
+    }
+    doc.querySelector('[data-tab=inspect]').click();
+
     // 9g. directives not needed for tracing are marked
     const traced = S.listing.lines.filter((l) => l.k === 'ins')[60];
     const loc = (S.img.multi && S.model.cover[traced.a] > 1 ? traced.s + ':' : '') + '$' + X.h4(traced.a);

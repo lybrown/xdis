@@ -368,6 +368,7 @@ dialog h2 { margin: 0 0 10px; font-size: 15px; }
 dialog .dlg-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
 dialog input[type=text], dialog select, dialog textarea { width: 100%; }
 dialog .field label { font-size: 12px; }
+dialog pre.mono { max-height: 40vh; overflow: auto; }
 dialog .help-grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; }
 dialog .help-grid > :nth-child(odd) { text-align: right; white-space: nowrap; }
 

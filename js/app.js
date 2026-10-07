@@ -98,12 +98,17 @@
         if (opt.keepView === false) {
             const sug = S.model.warnings.filter((w) => w.suggest);
             const nr = sug.filter((w) => w.suggest.type === 'relocate').length;
-            const ni = sug.filter((w) => w.suggest.type === 'inline').length, np = sug.length - nr - ni;
+            const ni = sug.filter((w) => w.suggest.type === 'inline').length;
+            const nt = sug.filter((w) => w.kind === 'table').length, nc = sug.filter((w) => w.kind === 'code').length;
+            const ns = sug.filter((w) => w.kind === 'struct').length, np = sug.length - nr - ni - nt - nc - ns;
             const parts = [];
             if (nr) parts.push(`${nr} relocated code block${nr > 1 ? 's' : ''}`);
             if (ni) parts.push(`${ni} routine${ni > 1 ? 's' : ''} with inline data`);
+            if (nt) parts.push(`${nt} jump table${nt > 1 ? 's' : ''}`);
+            if (nc) parts.push(`${nc} untraced code block${nc > 1 ? 's' : ''}`);
+            if (ns) parts.push(`${ns} data structure${ns > 1 ? 's' : ''}`);
             if (np) parts.push(`${np} likely pointer${np > 1 ? 's' : ''}`);
-            if (parts.length) setTimeout(() => setStatus(`Found ${parts.join(' and ')} — see Problems`), 0);
+            if (parts.length) setTimeout(() => setStatus(`Found ${parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0]} — see Problems`), 0);
         }
     }
 
@@ -1915,10 +1920,12 @@
         // real problems first, then suggestions
         uniq.sort((x, y) => !!x.suggest - !!y.suggest);
         S.problems = uniq;
-        const ptrs = uniq.filter((p) => p.suggest && p.suggest.type !== 'relocate' && p.suggest.type !== 'inline').length;
-        const allBtn = ptrs > 1 ? `<p><button id="btn-apply-ptrs" title="Show every suggested pair of immediates as an address">Apply all ${ptrs} pointer suggestions</button></p>` : '';
+        const ptrs = uniq.filter(isPointerSuggestion).length;
+        const codes = uniq.filter((p) => p.kind === 'code').length;
+        const allBtn = (ptrs > 1 ? `<p><button id="btn-apply-ptrs" title="Show every suggested pair of immediates as an address">Apply all ${ptrs} pointer suggestions</button></p>` : '') +
+            (codes > 1 ? `<p><button id="btn-apply-code" title="Trace every block that looks like code">Apply all ${codes} code suggestions</button></p>` : '');
         $('problem-list').innerHTML = allBtn + uniq.slice(0, 500).map((p, i) => {
-            const where = p.bankFix ? 'Choose the bank' : p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : p.suggest.type === 'inline' ? 'Review the inline data' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
+            const where = p.bankFix ? 'Choose the bank' : p.suggest ? (p.suggest.type === 'relocate' ? 'Review and apply this relocation' : p.suggest.type === 'inline' ? 'Review the inline data' : p.kind ? 'Review' : 'Review and apply') : p.k !== undefined ? `Go to ${hexAddr(X.keyAddr(p.k))}` : p.dir ? `Show directive ${p.dir}` :
                 p.extra ? 'Go to the corrupted data' : '';
             const dismiss = p.suggest ? `<button class="x dismiss" data-dismiss="${i}" title="Dismiss this suggestion (adds a dismiss directive)">×</button>` : '';
             return `<div class="problem${where ? ' link' : ''}${p.suggest ? ' suggest' : ''}" ${where ? `data-prob="${i}" title="${esc(where)}"` : ''}>${dismiss}${esc(p.msg)}</div>`;
@@ -1929,6 +1936,26 @@
         c.textContent = uniq.length - nSug;
         $('suggest-count').hidden = !nSug;
         $('suggest-count').textContent = nSug;
+    }
+
+    // Suggestions that "Apply all" covers: pairs of immediates and hi/lo bytes
+    function isPointerSuggestion(p) {
+        return !!p.suggest && !p.kind && p.suggest.type !== 'relocate' && p.suggest.type !== 'inline';
+    }
+
+    // Review a suggestion of one or more directives (jump tables, code
+    // found in gaps, platform structures).
+    async function reviewSuggestion(p) {
+        const dirs = p.dirs || [p.suggest];
+        const titles = { table: 'Jump table', code: 'Untraced code', struct: p.title || 'Data structure' };
+        const body = `<p>${esc(p.msg.replace(/ — click.*/, ''))}.</p>
+            <p class="dim">Adds</p><pre class="mono">${dirs.map((d) => esc(X.directiveString(d))).join('\n')}</pre>`;
+        const btn = await ask(titles[p.kind] || 'Suggestion', body,
+            [{ label: 'Dismiss', value: 'dismiss' }, { label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]);
+        if (btn === 'dismiss') return dismissSuggestion(p);
+        if (btn !== 'ok') return;
+        commit((pr) => { pr.directives = pr.directives.concat(dirs); },
+            dirs.length > 1 ? `Added ${dirs.length} directives` : `Added ${X.directiveString(dirs[0])}`);
     }
 
     // Show a pair of immediates as the halves of an address.
@@ -1995,9 +2022,15 @@
     }
 
     function applyAllPointerSuggestions() {
-        const list = (S.problems || []).filter((p) => p.suggest && p.suggest.type !== 'relocate' && p.suggest.type !== 'inline').map((p) => p.suggest);
+        const list = (S.problems || []).filter(isPointerSuggestion).map((p) => p.suggest);
         if (!list.length) return;
         commit((pr) => { pr.directives = pr.directives.concat(list); }, `Added ${list.length} pointer directives`);
+    }
+
+    function applyAllCodeSuggestions() {
+        const list = (S.problems || []).filter((p) => p.kind === 'code').map((p) => p.suggest);
+        if (!list.length) return;
+        commit((pr) => { pr.directives = pr.directives.concat(list); }, `Added ${list.length} code directives`);
     }
 
     function gotoProblem(p) {
@@ -2011,6 +2044,7 @@
             goKey(p.k);
             if (p.suggest.type === 'relocate') relocateDialog(null, p.suggest, p);
             else if (p.suggest.type === 'inline') inlineDialog(p.k, p);
+            else if (p.kind) reviewSuggestion(p);
             else if (p.suggest.type === 'hi' || p.suggest.type === 'lo') halfSuggestion(p);
             else pointerSuggestion(p);
             return;
@@ -2596,6 +2630,7 @@
             const prob = e.target.closest('[data-prob]');
             if (prob) return gotoProblem(S.problems[+prob.dataset.prob]);
             if (e.target.id === 'btn-apply-ptrs') return applyAllPointerSuggestions();
+            if (e.target.id === 'btn-apply-code') return applyAllCodeSuggestions();
             const ed = e.target.closest('[data-edit]');
             if (ed) return editDirective(ed.closest('.item'), +ed.dataset.edit);
             const del = e.target.closest('[data-del]');

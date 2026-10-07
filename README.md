@@ -201,6 +201,52 @@ or on the routine itself. Routines that start with `pla` / `sta P` / `pla` /
 `sta P+1` and then read `(P),y` are suggested in Problems. The test after the
 read (`bmi` or `beq`) and a final `jmp (P)` suggest which form applies.
 
+Jump tables
+-----------
+
+Indexed dispatch code is recognized and its table suggested as a code pointer
+table, which traces every entry:
+
+    lda hi,x / pha / lda lo,x / pha / rts      ; entries are the address minus 1
+    lda lo,x / sta P / lda hi,x / sta P+1 / jmp (P)
+
+When the high bytes follow the low bytes (`hi` = `lo`+1) it is a table of
+words (`codeptr $9000+1F`), otherwise two split tables (`codeptr $9020_9000+F`).
+The size comes from a bounds check before the dispatch (`cpx #N` / `bcs`) or,
+without one, from how many entries in a row point at code. A trailing `rts`
+on a pointer directive (`codeptr $A642_A62B+16 rts`) says the table holds each
+address minus 1; the output then reads `dta <[label-1]`.
+
+Code nothing traces into
+------------------------
+
+Untraced bytes are decoded from every address, and blocks that look like real
+routines are suggested as `code`. A block has to decode to valid instructions
+ending in `rts`, `rti` or `jmp` (or running into traced code). Its branches
+have to land on its own instructions or on traced code, and its calls on
+traced code, a label, or another block that passes the same test. It is then
+scored by how typical each opcode is of 6502 code compared with random bytes,
+using a profile of several programs mixed with the program's own traced code.
+Calls into traced code and operands with names add to the score. *Apply all*
+traces every suggested block at once.
+
+Machine structures
+------------------
+
+Immediates stored into a machine's registers, or passed to its OS, point at
+data whose layout is known:
+
+* Atari: display lists set in `SDLSTL`/`DLISTL` become data, with their LMS
+  and jump operands as addresses (a JVB to another list is followed too).
+  Character sets set in `CHBAS`/`CHBASE` become 1 KB of data.
+* C64: character sets set in `$D018` (in the VIC bank set in `$DD00`) and
+  sprite data from the sprite pointers after the screen.
+* BBC Micro: `OSWORD` (by call number), `OSFILE` and `OSGBPB` parameter blocks,
+  and `OSCLI`/`OSFIND` strings, addressed by `X` (low) and `Y` (high).
+
+The machine comes from the file type or the symbol sets in use. Each structure
+is one suggestion that adds all of its directives.
+
 Pointers in immediates
 ----------------------
 

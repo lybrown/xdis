@@ -110,6 +110,77 @@ const cases = [
             0x20, 0x20, 0x08, 0x4F, 0xCB, 0x60,                         // jsr bl / "OK" with bit 7 / rts
             0x60, 0x60, 0x60]),                                         // zr, fx, bl
     },
+    // jump tables: split rts tables with a bound check, and a word table
+    // behind jmp (P) sized by how many entries point at code
+    ...(() => {
+        const stub = [0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0];
+        const rts = Uint8Array.from(stub.concat([
+            0xA2, 0x00, 0xE0, 0x03, 0xB0, 0x08,             // ldx #0 / cpx #3 / bcs done
+            0xBD, 0x1F, 0x08, 0x48, 0xBD, 0x1C, 0x08, 0x48, // lda hi,x / pha / lda lo,x / pha
+            0x60,                                           // done: rts
+            0x21, 0x23, 0x25, 0x08, 0x08, 0x08,             // lo, hi: addresses - 1
+            0xE8, 0x60, 0xC8, 0x60, 0xCA, 0x60]));          // inx rts / iny rts / dex rts
+        const jmpi = Uint8Array.from(stub.concat([
+            0xA6, 0x02, 0xBD, 0x1C, 0x08, 0x85, 0xFB,       // ldx $02 / lda tbl,x / sta $FB
+            0xBD, 0x1D, 0x08, 0x85, 0xFC, 0x6C, 0xFB, 0x00, // lda tbl+1,x / sta $FC / jmp ($FB)
+            0x20, 0x08, 0x22, 0x08,                         // tbl: a($0820), a($0822)
+            0xE8, 0x60, 0xC8, 0x60]));
+        return [
+            { name: 'table-rts-suggest', type: 'prg', bytes: rts,
+                problems: [/Jump tables at \$081C \(low\) and \$081F \(high\): 3 entries dispatched by rts at \$081B/] },
+            { name: 'table-rts', type: 'prg', bytes: rts, pointers: true, expect: ['dta <[l0822-1]', 'dta >[l0826-1]', 'inx', 'dex'] },
+            { name: 'table-rts-mads', type: 'prg', bytes: rts, pointers: true, options: { syntax: 'mads' }, mads: true, expect: ['dta <[l0822-1]'] },
+            { name: 'table-jmpi', type: 'prg', bytes: jmpi, pointers: true, expect: ['dta <l0820', 'dta a(l0822)', 'iny'] },
+        ];
+    })(),
+    // untraced code: a routine nothing calls is suggested; graphics bytes
+    // that happen to decode are not
+    ...(() => {
+        const bytes = Uint8Array.from([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
+            0xA9, 0x00, 0x8D, 0x20, 0xD0, 0x60,                         // lda #0 / sta $D020 / rts
+            0xA2, 0x00, 0xBD, 0x00, 0x09, 0x9D, 0x00, 0x04,             // ldx #0 / lda $0900,x / sta $0400,x
+            0xE8, 0xD0, 0xF7, 0x20, 0x0D, 0x08, 0x60,                   // inx / bne / jsr $080D / rts
+            0x01, 0x04, 0x11, 0x44, 0x11, 0x44, 0x15, 0x55, 0x55, 0x55, 0x55, 0x55, 0x40]);
+        return [
+            { name: 'gap-code-suggest', type: 'prg', bytes, problems: [/Possible code at \$0813-\$0821 that nothing traces into: 7 instructions/] },
+            { name: 'gap-code', type: 'prg', bytes, pointers: true, expect: ['l0813', 'sta l0400,x'], absent: ['ora (', 'rti'] },
+        ];
+    })(),
+    // platform structures
+    ...(() => {
+        // Atari: a display list in SDLSTL and a character set in CHBAS
+        const seg = (start, data) => [start & 0xFF, start >> 8, (start + data.length - 1) & 0xFF, (start + data.length - 1) >> 8, ...data];
+        const font = Array.from({ length: 1024 }, (_, i) => (i * 37) & 0xFF);
+        const xex = Uint8Array.from([0xFF, 0xFF,
+            ...seg(0x2000, [0xA9, 0x00, 0x8D, 0x30, 0x02, 0xA9, 0x21, 0x8D, 0x31, 0x02, 0xA9, 0x30, 0x8D, 0xF4, 0x02, 0x60]),
+            ...seg(0x2100, [0x70, 0x70, 0x70, 0x42, 0x00, 0x40, 0x02, 0x02, 0x41, 0x00, 0x21]),
+            ...seg(0x3000, font),
+            ...seg(0x2E0, [0x00, 0x20])]);
+        // C64: $D018 = $1C (character set at $3000), sprite pointers $80/$81
+        const c64 = new Uint8Array(0x3800 - 0x0801 + 2);
+        c64.set([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
+            0xA9, 0x1C, 0x8D, 0x18, 0xD0, 0xA9, 0x80, 0x8D, 0xF8, 0x07, 0xA9, 0x81, 0x8D, 0xF9, 0x07, 0x60]);
+        for (let a = 0x2000; a < 0x3800; a++) c64[a - 0x0801 + 2] = (a * 13) & 0xFF;
+        // BBC: OSWORD 7 (SOUND) with a block at $1918, OSCLI with a string at $1928
+        const bbc = new Uint8Array(0x30);
+        bbc.set([0xA2, 0x18, 0xA0, 0x19, 0xA9, 0x07, 0x20, 0xF1, 0xFF, 0xA2, 0x28, 0xA0, 0x19, 0x20, 0xF7, 0xFF, 0x60]);
+        bbc.set([0x01, 0x00, 0xF1, 0xFF, 0x64, 0x00, 0x14, 0x00], 0x18);
+        bbc.set([0x46, 0x58, 0x20, 0x30, 0x0D], 0x28);
+        return [
+            { name: 'struct-atari', type: 'xex', bytes: xex, include: ['symbols/sys.dop'],
+                problems: [/Display list at \$2100-\$210A: 3 mode lines, screen memory at \$4000/, /Character set at \$3000-\$33FF, set in CHBAS at \$200C/] },
+            { name: 'struct-atari-applied', type: 'xex', bytes: xex, include: ['symbols/sys.dop'], pointers: true,
+                expect: ['dta a(l4000)', 'dta a(l2100)', 'lda #<l2100'] },
+            { name: 'struct-c64', type: 'prg', bytes: c64,
+                problems: [/Character set at \$3000-\$37FF, set in \$D018 at \$080F/, /Sprite data: 2 sprites at \$2000, \$2040/] },
+            { name: 'struct-bbc', type: 'raw', org: 0x1900, bytes: bbc, include: ['symbols/bbcmos.dop'], directives: ['code $1900'],
+                problems: [/Parameter block \(8 bytes\) at \$1918 passed to OSWORD 7 at \$1906/, /String at \$1928 passed to OSCLI at \$190D/] },
+            { name: 'struct-bbc-applied', type: 'raw', org: 0x1900, bytes: bbc, include: ['symbols/bbcmos.dop'], directives: ['code $1900'],
+                pointers: true, expect: ["dta c'FX 0',$0D", 'ldx #<l1918', 'ldy #>l1928'] },
+        ];
+    })(),
+    { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
+      pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests
     { name: 'galaxian', project: 'xdis/examples/Galaxian_PLUS_v2.xdis.json', relocate: true,
       expect: ['org r:$A000', 'jmp lA000'] },
@@ -380,7 +451,7 @@ for (const c of cases) {
         const img0 = X.loadImage(bytes, type, org, c.cartType);
         for (let round = 0; round < 5; round++) {
             const m0 = X.analyze(img0, X.allDirectives(project), project.options);
-            const add = m0.warnings.filter((w) => w.suggest && w.suggest.type !== 'relocate').map((w) => w.suggest);
+            const add = m0.warnings.filter((w) => w.suggest && w.suggest.type !== 'relocate').flatMap((w) => w.dirs || [w.suggest]);
             if (!add.length) break;
             project.directives = project.directives.concat(add);
         }

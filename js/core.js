@@ -417,7 +417,7 @@
             const loc = (d.seg ? segText(d.seg) + ':' : '') + '$' + hx(d.addr);
             return `${d.type} ${loc} ${d.text.replace(/\\/g, '\\\\').replace(/\n/g, '\\n')}`;
         }
-        return `${d.type} ${specString(d)}`;
+        return `${d.type} ${specString(d)}${d.rts ? ' rts' : ''}`;
     }
 
     function parseDirectiveLine(line) {
@@ -470,6 +470,12 @@
             if (r[2] !== undefined) d.target = parseInt(r[2], 16);
             if (type === 'lo' && d.target === undefined) throw new Error('lo needs the full target address, e.g. lo $4805 $4380');
             if (d.target !== undefined && d.range) throw new Error(`${type} with a target applies to a single byte`);
+            return d;
+        }
+        if ((type === 'codeptr' || type === 'address') && /\s+rts$/.test(m[2])) {
+            // "rts": the table holds each address minus one, for rts dispatch
+            const d = parseSpec(type, m[2].replace(/\s+rts$/, ''));
+            d.rts = true;
             return d;
         }
         if (CLI_TYPES.includes(type) || EXT_TYPES.includes(type)) {
@@ -567,7 +573,7 @@
             for (const d of model.img.cartDirectives) out.push(directiveString(d));
         }
         for (const d of project.directives) {
-            if (CLI_TYPES.includes(d.type)) {
+            if (CLI_TYPES.includes(d.type) && !d.rts) {
                 out.push(directiveString(d));
             } else if (d.type === 'label' || d.type === 'text' || d.type === 'word') {
                 // The CLI has no plain label; `code` keeps tracing intact on
@@ -1006,12 +1012,13 @@
                     key(owner[lo] || owner[hi], owner[lo] ? lo : hi), d);
                 return -1;
             }
-            const t = mem[lo] | (mem[hi] << 8);
+            const adj = d.rts ? 1 : 0;
+            const t = ((mem[lo] | (mem[hi] << 8)) + adj) & 0xFFFF;
             const ts = owner[t];
             need.add(key(ts, t));
             const Tl = S[owner[lo] - 1], Th = S[owner[hi] - 1];
-            Tl.ptr.set(lo - Tl.seg.start, { t, ts, part: '<', other: hi });
-            Th.ptr.set(hi - Th.seg.start, { t, ts, part: '>', other: lo });
+            Tl.ptr.set(lo - Tl.seg.start, { t, ts, part: '<', other: hi, adj });
+            Th.ptr.set(hi - Th.seg.start, { t, ts, part: '>', other: lo, adj });
             return t;
         }
 
@@ -1143,7 +1150,19 @@
         // suggestions dismissed with "dismiss $ADDR" (the address they point at)
         const dismissed = new Set(directives.filter((d) => d.type === 'dismiss').map((d) => key(resolveSeg(d, d.addr), d.addr)));
         const keep = (sg) => !dismissed.has(sg.at);
-        for (const sg of findRelocations().filter(keep)) {
+        // The machine, from the file type or the symbol sets in use
+        const platform = (() => {
+            const sets = directives.map((d) => String(d.from || ''));
+            if (img.type === 'prg' || sets.some((f) => /(6510|vic|sid|cia)\.dop$/.test(f))) return 'c64';
+            if (sets.some((f) => /bbc/i.test(f))) return 'bbc';
+            if (['xex', 'sap', 'car', 'cart'].includes(img.type) ||
+                sets.some((f) => /(hardware|sys|atarixl|atarifp|basic|dos)\.dop$/.test(f))) return 'atari';
+            return null;
+        })();
+        // suggest: false skips the detectors (when only the traced code matters)
+        const suggesting = opts.suggest !== false;
+        const insCache = new Map();      // segment -> its traced instructions
+        for (const sg of (suggesting ? findRelocations() : []).filter(keep)) {
             warnings.push({
                 msg: `Code at $${h4(sg.dir.addr)}-$${h4(sg.dir.addr + sg.dir.range)} is copied to $${h4(sg.dir.run)} ` +
                     `by the loop at $${h4(keyAddr(sg.at))} and run there — click to relocate it`,
@@ -1157,7 +1176,9 @@
         //   lda (p),y / sta (q),y / iny / bne ... inc p+1 / inc q+1 / lda q+1 / cmp #END / bne
         // Decoded traced instructions of a segment, in address order.
         function instructionsOf(T) {
+            if (insCache.has(T)) return insCache.get(T);
             const ins = [];
+            insCache.set(T, ins);
             const data = T.seg.data;
             for (let o = 0; o < T.ilen.length; o++) {
                 if (!T.ilen[o]) continue;
@@ -1245,11 +1266,500 @@
             return null;
         }
 
-        for (const sg of findPointerPairs().filter(keep)) {
+        for (const sg of (suggesting ? findPointerPairs() : []).filter(keep)) {
             warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir });
         }
-        for (const sg of findInlineRoutines().filter(keep)) {
+        for (const sg of (suggesting ? findInlineRoutines() : []).filter(keep)) {
             warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir });
+        }
+        // structures and jump tables first: the code finder leaves their bytes alone
+        const structs = (suggesting ? findStructures() : []).filter(keep);
+        const tables = (suggesting ? findJumpTables() : []).filter(keep);
+        const reserved = new Set();
+        for (const d of structs.flatMap((sg) => sg.dirs).concat(tables.map((sg) => sg.dir))) {
+            const span = POINTER_TYPES.includes(d.type) && d.hi === undefined ? Math.max(d.range, 1) : d.range;
+            for (let o = 0; o <= span; o++) {
+                reserved.add(d.addr + o);
+                if (d.hi !== undefined) reserved.add(d.hi + o);
+            }
+        }
+        for (const sg of structs) {
+            warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dirs[0], dirs: sg.dirs, kind: 'struct', title: sg.title });
+        }
+        for (const sg of tables) {
+            warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir, kind: 'table' });
+        }
+        for (const sg of (suggesting ? findUntracedCode(reserved) : []).filter(keep)) {
+            warnings.push({ msg: sg.msg, k: sg.at, suggest: sg.dir, kind: 'code' });
+        }
+
+        // Find code nothing traces into: decode untraced bytes from each
+        // address and keep blocks that look like real routines. A block is
+        // valid instructions up to rts/jmp (or running into traced code),
+        // with every branch landing on one of its own instructions or on
+        // traced code, and every jsr/jmp going to traced code, a label or its
+        // own instructions. Each instruction then scores how much more likely
+        // its opcode is in 6502 code (a generic profile mixed with this
+        // program's traced code) than in random bytes; calls into traced
+        // code and absolute operands with names add to the score.
+        function findUntracedCode(reserved) {
+            const out = [];
+            const MIN = 4, MAX = 400;
+            // opcode frequencies: traced code vs. untraced bytes
+            const inCode = new Float64Array(256);
+            let nCode = 0, nFree = 0;
+            const busyOf = new Map();
+            for (const T of S) {
+                const data = T.seg.data, len = data.length;
+                const busy = new Uint8Array(len);         // traced code, data formats and pointers
+                for (let o = 0; o < len; o++) {
+                    if (T.ilen[o]) {
+                        busy.fill(1, o, Math.min(len, o + T.ilen[o]));
+                        inCode[data[o]]++;
+                        nCode++;
+                    }
+                    if (T.fmt[o]) busy[o] = 1;
+                }
+                for (const o of T.ptr.keys()) busy[o] = 1;
+                for (const a of reserved) if (a >= T.seg.start && a <= T.seg.end) busy[a - T.seg.start] = 1;
+                for (let o = 0; o < len; o++) if (!busy[o]) nFree++;
+                busyOf.set(T, busy);
+            }
+            if (!nFree) return out;
+            // Opcode frequencies (per mille) in traced code of six programs
+            // (Atari and BBC games, Atari BASIC cartridges): a generic
+            // profile, mixed with this program's own when it has enough code
+            const GENERIC = [
+                0,0,0,0,0,2,0,0,1,3,5,0,0,1,0,0,13,0,0,0,0,0,0,0,13,0,0,0,0,1,0,0,
+                56,0,0,0,2,1,1,0,1,15,2,0,2,0,0,0,6,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,
+                0,0,0,0,0,1,0,0,10,4,13,0,22,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                23,0,0,0,0,3,1,0,10,8,2,0,1,1,0,0,1,0,0,0,0,0,0,0,1,2,0,0,0,0,0,0,
+                0,0,0,0,6,56,12,0,9,0,6,0,9,77,8,0,15,10,0,0,0,3,0,0,5,15,1,0,0,14,0,0,
+                40,0,42,0,4,35,6,0,6,98,9,0,3,20,2,0,12,13,0,0,1,4,0,0,0,15,1,0,1,15,1,0,
+                5,0,0,0,1,7,5,0,9,20,10,0,0,2,1,0,40,1,0,0,0,0,0,0,0,0,0,0,0,0,1,0,
+                4,0,0,0,0,1,10,0,7,4,20,0,0,0,5,0,29,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,
+            ];
+            const own = nCode >= 200 ? 0.3 : 0;
+            const llr = new Float64Array(256);
+            let gSum = 0;
+            const gen = GENERIC.map((v, b) => v || (OPS[b].illegal || OPS[b].jam ? 0.02 : 0.3));
+            for (const v of gen) gSum += v;
+            for (let b = 0; b < 256; b++) {
+                const pc = (1 - own) * gen[b] / gSum + own * (inCode[b] + 0.1) / (nCode + 25.6);
+                llr[b] = Math.log(pc * 256);               // against uniform bytes
+            }
+            // opcodes a block can start with
+            const startsCode = OPS.map((op) => op.code !== 0 && !op.jam && (!op.illegal || opts.illegal) && op.mn !== 'rti');
+            for (const T of S) {
+                const data = T.seg.data, start = T.seg.start, len = data.length;
+                const busy = busyOf.get(T);
+                const named = (t) => {
+                    const l = labels.get(key(segFor(T, t), t));
+                    return !!(l && l.user);
+                };
+                const codeAt = (t) => isCodeStart(key(segFor(T, t), t));
+                // a call or branch out of a block may go to another untraced
+                // block, if that one looks like code too
+                const memo = new Map();
+                const blockAt = (t) => {
+                    const c = t - start;
+                    if (c < 0 || c >= len || busy[c] || segFor(T, t) !== T.seg.index) return null;
+                    if (!memo.has(c)) {
+                        memo.set(c, { pending: true });          // recursion: assume yes
+                        memo.set(c, block(c));
+                    }
+                    return memo.get(c);
+                };
+                // decode a block at offset c; null if it doesn't look like code
+                const block = (c) => {
+                    const starts = new Set();
+                    const targets = [];
+                    let o = c, score = 0, n = 0, far = c;
+                    for (;;) {
+                        if (o >= len) return null;
+                        if (busy[o]) {
+                            // ran into traced code: fine if exactly at an instruction
+                            if (!T.ilen[o] || o === c) return null;
+                            break;
+                        }
+                        const op = OPS[data[o]];
+                        if (op.code === 0 || op.jam || (op.illegal && !opts.illegal)) return null;
+                        if (o + op.len > len) return null;
+                        for (let x = 1; x < op.len; x++) if (busy[o + x]) return null;
+                        starts.add(o);
+                        if (++n > MAX) return null;
+                        score += llr[data[o]];
+                        if (score < -6) return null;               // reads like data
+                        const lo = data[o + 1], w = lo | (data[o + 2] << 8);
+                        const a = start + o;
+                        if (op.branch) {
+                            const t = (a + 2 + (lo < 128 ? lo : lo - 256)) & 0xFFFF;
+                            targets.push(t);
+                            if (t - start > far) far = t - start;
+                        } else if ((op.mn === 'jsr' || op.mn === 'jmp') && op.mode === 'abs') {
+                            if (codeAt(w) || named(w)) score += 3;
+                            else targets.push(w);
+                        } else if (op.len === 3 && named(w)) {
+                            score += 2;
+                        }
+                        o += op.len;
+                        if (op.mn === 'rti') score -= 4;               // $40 is common in data
+                        if ((op.mn === 'rts' || op.mn === 'rti' || op.mn === 'jmp') && o > far) break;
+                    }
+                    for (const t of targets) {
+                        if (!starts.has(t - start) && !codeAt(t) && !blockAt(t)) return null;
+                    }
+                    if (n < MIN || score < 12 || score < n / 2) return null;
+                    return { end: o, n, score };
+                };
+                for (let c = 0; c < len; c++) {
+                    if (busy[c] || !startsCode[data[c]]) continue;
+                    const m = memo.get(c);
+                    const b = memo.has(c) && !(m && m.pending) ? m : block(c);
+                    if (!b) continue;
+                    const a = start + c;
+                    out.push({
+                        at: key(T.seg.index, a),
+                        dir: { type: 'code', name: null, seg: cover[a] > 1 ? T.seg.index : 0, addr: a, range: 0 },
+                        msg: `Possible code at $${h4(a)}-$${h4(start + b.end - 1)} that nothing traces into: ` +
+                            `${b.n} instructions — click to review`,
+                    });
+                    c = b.end - 1;
+                }
+            }
+            return out;
+        }
+
+        // Find data structures the machine defines, from immediates stored
+        // into its registers or passed to its OS:
+        //   Atari: display lists (SDLSTL/DLISTL), with their LMS and jump
+        //          addresses; character sets (CHBAS/CHBASE)
+        //   C64:   character sets ($D018, with the VIC bank from $DD00);
+        //          sprite data (sprite pointers after the screen)
+        //   BBC:   OSWORD/OSFILE/OSGBPB parameter blocks and OSCLI/OSFIND
+        //          strings, addressed by X (low) and Y (high)
+        function findStructures() {
+            const out = [];
+            if (!platform) return out;
+            const scoped = (a) => (cover[a] > 1 ? finalOwner[a] : 0);
+            const byteAt = (a) => {
+                const s = finalOwner[a];
+                const U = s && S[s - 1];
+                return U ? U.seg.data[a - U.seg.start] : -1;
+            };
+            // a range that is loaded and neither code nor already classified
+            const free = (a, n) => {
+                for (let x = a; x < a + n; x++) {
+                    if (x > 0xFFFF) return false;
+                    const s = finalOwner[x];
+                    const U = s && S[s - 1];
+                    if (!U) return false;
+                    const o = x - U.seg.start;
+                    if (U.ilen[o] || U.fmt[o] || U.ptr.has(o)) return false;
+                }
+                // not inside an instruction either
+                for (let x = a - 2; x < a; x++) {
+                    const s = x >= 0 && finalOwner[x];
+                    const U = s && S[s - 1];
+                    if (U && U.ilen[x - U.seg.start] > a - x) return false;
+                }
+                return true;
+            };
+            const CHANGES = { a: /^(adc|sbc|and|ora|eor|pla|txa|tya|asl|lsr|rol|ror)$/, x: /^(inx|dex|tax|tsx)$/, y: /^(iny|dey|tay)$/ };
+            // Walk traced code with known immediates in A, X and Y; call
+            // store(P, value, instruction) and call(target, regs, instruction).
+            const walk = (store, call) => {
+                for (const T of S) {
+                    const ins = instructionsOf(T);
+                    let regs = {};
+                    for (const x of ins) {
+                        const r = refs.get(key(T.seg.index, x.a));
+                        if (r && r.callers.length) regs = {};
+                        const mn = x.op.mn;
+                        if ((mn === 'lda' || mn === 'ldx' || mn === 'ldy') && x.op.mode === 'imm') {
+                            regs[mn[2]] = { v: x.lo, at: x.a + 1 };
+                            continue;
+                        }
+                        if ((mn === 'sta' || mn === 'stx' || mn === 'sty') && (x.op.mode === 'zp' || x.op.mode === 'abs')) {
+                            const g = regs[mn[2]];
+                            if (g) store(x.op.mode === 'zp' ? x.lo : x.w, g, x, T);
+                            continue;
+                        }
+                        if (mn === 'jsr' && x.op.mode === 'abs') call(x.w, regs, x, T);
+                        if (x.op.branch || mn === 'jsr' || mn === 'jmp' || mn === 'rts' || mn === 'rti' || mn === 'brk') regs = {};
+                        else for (const g of ['a', 'x', 'y']) if (CHANGES[g].test(mn)) delete regs[g];
+                    }
+                }
+            };
+            const seen = new Set();
+            const once = (k) => (seen.has(k) ? false : (seen.add(k), true));
+
+            if (platform === 'atari') {
+                // display lists: lo/hi immediates stored into SDLSTL or DLISTL
+                const halves = new Map();         // register -> {v, at}
+                const dls = [], fonts = [];
+                walk((P, g, x) => {
+                    if (P === 0x230 || P === 0x231 || P === 0xD402 || P === 0xD403) {
+                        halves.set(P, { v: g.v, at: x.a });
+                        const lo = halves.get(P & ~1), hi = halves.get(P | 1);
+                        if (lo && hi && Math.abs(lo.at - hi.at) < 24) dls.push({ addr: lo.v | (hi.v << 8), at: Math.min(lo.at, hi.at) });
+                    }
+                    if (P === 0x2F4 || P === 0xD409) fonts.push({ addr: g.v << 8, at: x.a, reg: P === 0x2F4 ? 'CHBAS' : 'CHBASE' });
+                }, () => {});
+                // a JVB to another address is the next frame's display list
+                for (let i = 0; i < dls.length && i < 64; i++) {
+                    if (!once(dls[i].addr)) continue;
+                    const r = parseDisplayList(dls[i].addr);
+                    if (!r) continue;
+                    out.push(r);
+                    if (r.next !== undefined) dls.push({ addr: r.next });
+                }
+                // character sets: 1 KB from a page in CHBAS/CHBASE
+                for (const f of fonts) {
+                    if (f.addr & 0x1FF || !once(f.addr)) continue;
+                    if (free(f.addr, 0x400)) {
+                        out.push({ at: key(finalOwner[f.addr], f.addr), title: 'Character set',
+                            dirs: [{ type: 'data', name: null, seg: scoped(f.addr), addr: f.addr, range: 0x3FF }],
+                            msg: `Character set at $${h4(f.addr)}-$${h4(f.addr + 0x3FF)}, set in ${f.reg} at $${h4(f.at)} — click to review` });
+                    }
+                }
+            }
+            if (platform === 'c64') {
+                const d018 = [], banks = new Set(), sprites = [];
+                walk((P, g, x) => {
+                    if (P === 0xD018) d018.push({ v: g.v, at: x.a });
+                    if (P === 0xDD00) banks.add((3 - (g.v & 3)) * 0x4000);
+                    if (P >= 0x0400 && P <= 0xFFFF && (P & 0x3FF) >= 0x3F8) sprites.push({ v: g.v, at: x.a, screen: P & ~0x3FF });
+                }, () => {});
+                if (!banks.size) banks.add(0);
+                // character sets: 2 KB at bank + ((v >> 1) & 7) * $800; banks 0
+                // and 2 see the character ROM at $1000-$1FFF instead
+                for (const r of d018) {
+                    for (const bank of banks) {
+                        const off = ((r.v >> 1) & 7) * 0x800;
+                        if ((bank === 0 || bank === 0x8000) && (off === 0x1000 || off === 0x1800)) continue;
+                        const at = bank + off;
+                        if (!once(at) || !free(at, 0x800)) continue;
+                        out.push({ at: key(finalOwner[at], at), title: 'Character set',
+                            dirs: [{ type: 'data', name: null, seg: scoped(at), addr: at, range: 0x7FF }],
+                            msg: `Character set at $${h4(at)}-$${h4(at + 0x7FF)}, set in $D018 at $${h4(r.at)} — click to review` });
+                    }
+                }
+                // sprite data: 64 bytes at bank + pointer * 64, for pointers
+                // stored into the last 8 bytes of a screen's 1 KB
+                const blocks = [];
+                for (const sp of sprites) {
+                    const screens = d018.map((r) => (r.v >> 4) * 0x400);
+                    const onScreen = sp.screen === 0x400 || screens.some((o) => [...banks].some((b) => b + o === sp.screen));
+                    if (!onScreen) continue;
+                    const at = (sp.screen & 0xC000) + sp.v * 64;
+                    if (!once('s' + at) || !free(at, 63)) continue;
+                    blocks.push(at);
+                }
+                if (blocks.length) {
+                    blocks.sort((x, y) => x - y);
+                    // adjacent sprites become one range
+                    const ranges = [];
+                    for (const at of blocks) {
+                        const last = ranges[ranges.length - 1];
+                        if (last && at === last[1] + 1) last[1] = at + 63;
+                        else ranges.push([at, at + 63]);
+                    }
+                    for (const r of ranges) if (r[1] > 0xFFFF || !free(r[0], r[1] - r[0] + 1)) r[1] -= 1;   // the unused 64th byte
+                    out.push({ at: key(finalOwner[blocks[0]], blocks[0]), title: 'Sprite data',
+                        dirs: ranges.map(([p0, p1]) => ({ type: 'data', name: null, seg: scoped(p0), addr: p0, range: p1 - p0 })),
+                        msg: `Sprite data: ${blocks.length} sprite${blocks.length > 1 ? 's' : ''} at ${blocks.map((x) => '$' + h4(x)).join(', ')} — click to review` });
+                }
+            }
+
+            if (platform === 'bbc') {
+                // OS calls that take a block address in X (low) and Y (high)
+                const OSWORD_SIZES = { 0: 5, 1: 5, 2: 5, 3: 5, 4: 5, 5: 5, 6: 5, 7: 8, 8: 14, 9: 5, 10: 9, 11: 5, 12: 5 };
+                const CALLS = {
+                    0xFFF1: { name: 'OSWORD', size: (r) => (r.a ? OSWORD_SIZES[r.a.v] : undefined) },
+                    0xFFDD: { name: 'OSFILE', size: () => 18 },
+                    0xFFD1: { name: 'OSGBPB', size: () => 13 },
+                    0xFFF7: { name: 'OSCLI', text: true },
+                    0xFFCE: { name: 'OSFIND', text: true, when: (r) => r.a && r.a.v !== 0 },
+                };
+                walk(() => {}, (t, regs, x) => {
+                    const c = CALLS[t];
+                    if (!c || !regs.x || !regs.y || (c.when && !c.when(regs))) return;
+                    const at = regs.x.v | (regs.y.v << 8);
+                    if (!once(at)) return;
+                    let n = c.text ? 0 : c.size(regs);
+                    if (c.text) {
+                        // a string ending in CR
+                        while (n < 256 && byteAt(at + n) >= 0 && byteAt(at + n) !== 0x0D) n++;
+                        if (byteAt(at + n) !== 0x0D) return;
+                        n++;
+                    }
+                    if (!n || !free(at, n)) return;
+                    const dirs = [{ type: 'address', name: null, seg: scoped(regs.x.at), addr: regs.x.at, range: 0, hi: regs.y.at },
+                        { type: c.text ? 'text' : 'data', name: null, seg: scoped(at), addr: at, range: n - 1 }];
+                    out.push({ at: key(finalOwner[at], at), title: c.text ? 'OS string' : 'OS parameter block', dirs,
+                        msg: `${c.text ? 'String' : `Parameter block (${n} bytes)`} at $${h4(at)} passed to ${c.name}` +
+                            `${t === 0xFFF1 ? ' ' + regs.a.v : ''} at $${h4(x.a)} — click to review` });
+                });
+            }
+            return out;
+
+            // Parse the Atari display list at `start`. Lines are 1 byte, 3
+            // with LMS (bit 6) and an address; $x1 jumps (JMP), $41 jumps and
+            // waits for vertical blank (JVB), which ends the list.
+            function parseDisplayList(start) {
+                const dirs = [];
+                const ptrs = [];
+                let a = start, lines = 0, screen = null, next;
+                const parts = [[start, start]];
+                for (let n = 0; n < 512; n++) {
+                    const b = byteAt(a);
+                    if (b < 0) return null;
+                    const mode = b & 0x0F;
+                    if (mode === 1) {
+                        if (!free(a, 3)) return null;
+                        const t = byteAt(a + 1) | (byteAt(a + 2) << 8);
+                        ptrs.push(a + 1);
+                        parts[parts.length - 1][1] = a + 2;
+                        if (b & 0x40) {                          // JVB: the end
+                            if (t !== start) next = t;
+                            break;
+                        }
+                        if (t === start || parts.some(([p0, p1]) => t >= p0 && t <= p1)) break;
+                        a = t;
+                        parts.push([a, a]);
+                        continue;
+                    }
+                    if (mode && b & 0x40) {
+                        if (!free(a, 3)) return null;
+                        ptrs.push(a + 1);
+                        if (screen === null) screen = byteAt(a + 1) | (byteAt(a + 2) << 8);
+                        parts[parts.length - 1][1] = a + 2;
+                        a += 3;
+                    } else {
+                        if (!free(a, 1)) return null;
+                        parts[parts.length - 1][1] = a;
+                        a++;
+                    }
+                    if (mode) lines++;
+                    if (n === 511) return null;
+                }
+                if (!lines) return null;
+                for (const p of ptrs) dirs.push({ type: 'address', name: null, seg: scoped(p), addr: p, range: 0 });
+                for (const [p0, p1] of parts) dirs.push({ type: 'data', name: null, seg: scoped(p0), addr: p0, range: p1 - p0 });
+                const end = parts[0][1];
+                return {
+                    at: key(finalOwner[start], start), title: 'Display list', dirs, next,
+                    msg: `Display list at $${h4(start)}-$${h4(end)}: ${lines} mode line${lines > 1 ? 's' : ''}` +
+                        `${screen !== null ? `, screen memory at $${h4(screen)}` : ''} — click to review`,
+                };
+            }
+        }
+
+        // Find jump tables behind indexed dispatch code:
+        //   lda HI,x / pha / lda LO,x / pha / rts      (entries are address-1)
+        //   lda LO,x / sta P / lda HI,x / sta P+1 / jmp (P)
+        // HI = LO+1 is a table of words, otherwise two split tables. The size
+        // comes from a bounds check (cpx #N / bcs) or, without one, from how
+        // many entries in a row point at plausible code.
+        function findJumpTables() {
+            const out = [];
+            const byteOf = (T, a) => {
+                const s = segFor(T, a);
+                const U = s && S[s - 1];
+                return U && a >= U.seg.start && a <= U.seg.end ? U.seg.data[a - U.seg.start] : -1;
+            };
+            // looks like the start of code: traced, or a few valid instructions
+            const plausible = (T, t) => {
+                const s = segFor(T, t);
+                if (!s) return !!labels.get(key(0, t));          // e.g. an OS entry point
+                if (isCodeStart(key(s, t))) return true;
+                let a = t;
+                for (let n = 0; n < 4; n++) {
+                    const b = byteOf(T, a);
+                    if (b < 0) return false;
+                    const op = OPS[b];
+                    if (op.code === 0 || op.jam || op.illegal) return false;
+                    if (op.mn === 'rts' || op.mn === 'rti' || op.mn === 'jmp') return true;
+                    a += op.len;
+                }
+                return true;
+            };
+            // a table byte that ends the table: code, a known pointer, or the
+            // start of something else that code reads
+            const stops = (T, a, first) => {
+                const s = segFor(T, a);
+                const U = s && S[s - 1];
+                if (!U || a < U.seg.start || a > U.seg.end) return true;
+                const o = a - U.seg.start;
+                if (U.ilen[o] || U.ptr.has(o) || (U.fmt[o] && U.fmt[o] !== FMT.data)) return true;
+                const r = refs.get(key(s, a));
+                return !first && !!(r && (r.access.length || r.callers.length));
+            };
+            // entries in a bound check before instruction j on index register r
+            const bound = (ins, j, r, word) => {
+                for (let n = j - 1; n >= Math.max(0, j - 10); n--) {
+                    const x = ins[n];
+                    if (x.op.mode !== 'imm' || !/^(cmp|cpx|cpy)$/.test(x.op.mn)) continue;
+                    const nx = ins[n + 1];
+                    if (!nx || (nx.op.mn !== 'bcs' && nx.op.mn !== 'bcc')) return 0;
+                    const between = ins.slice(n + 2, j);
+                    const doubled = between.some((y) => y.op.mn === 'asl' && y.op.mode === 'acc');
+                    if (x.op.mn === 'cmp') return between.some((y) => y.op.mn === 'ta' + r) ? x.lo : 0;
+                    if (x.op.mn !== 'cp' + r) return 0;
+                    return word && !doubled ? x.lo >> 1 : x.lo;
+                }
+                return 0;
+            };
+            const seen = new Set();
+            S.forEach((T) => {
+                const ins = instructionsOf(T);
+                const idx = (x) => (x && x.op.mn === 'lda' && (x.op.mode === 'abx' || x.op.mode === 'aby') ? x.op.mode[2] : null);
+                for (let j = 0; j + 4 < ins.length; j++) {
+                    const w = ins.slice(j, j + 5);
+                    if (w.some((x, n) => n && x.a !== w[n - 1].a + w[n - 1].op.len)) continue;
+                    let lo, hi, rts = false, r, how;
+                    if (idx(w[0]) && w[1].op.mn === 'pha' && idx(w[2]) === idx(w[0]) && w[3].op.mn === 'pha' && w[4].op.mn === 'rts') {
+                        hi = w[0].w; lo = w[2].w; r = idx(w[0]); rts = true; how = 'rts';
+                    } else if (idx(w[0]) && idx(w[2]) === idx(w[0]) && /^st[a]$/.test(w[1].op.mn) && w[3].op.mn === 'sta' &&
+                        w[4].op.mn === 'jmp' && w[4].op.mode === 'ind') {
+                        const P = w[4].w;
+                        const dst = (x) => (x.op.mode === 'zp' ? x.lo : x.op.mode === 'abs' ? x.w : -1);
+                        if (dst(w[1]) === P && dst(w[3]) === P + 1) { lo = w[0].w; hi = w[2].w; }
+                        else if (dst(w[1]) === P + 1 && dst(w[3]) === P) { hi = w[0].w; lo = w[2].w; }
+                        else continue;
+                        r = idx(w[0]); how = 'jmp ($' + (P < 0x100 ? h2(P) : h4(P)) + ')';
+                    } else {
+                        continue;
+                    }
+                    const word = hi === lo + 1;
+                    const tkey = key(segFor(T, lo), lo);
+                    if (seen.has(tkey)) continue;
+                    seen.add(tkey);
+                    const max = bound(ins, j, r, word) || 0;
+                    const limit = max || 128;
+                    let n = 0;
+                    for (; n < limit; n++) {
+                        const la = word ? lo + 2 * n : lo + n, ha = word ? la + 1 : hi + n;
+                        if (ha > 0xFFFF || stops(T, la, n === 0) || stops(T, ha, n === 0)) break;
+                        if (!word && (lo < hi ? la >= hi : ha >= lo)) break;          // ran into the other half
+                        const v = byteOf(T, la) | (byteOf(T, ha) << 8);
+                        if (!plausible(T, (v + (rts ? 1 : 0)) & 0xFFFF)) break;
+                    }
+                    if (n < (max ? Math.min(max, 1) : 2) || (max && n < max)) continue;
+                    const scoped = (a) => (cover[a] > 1 ? T.seg.index : 0);
+                    const dir = word ? { type: 'codeptr', name: null, seg: scoped(lo), addr: lo, range: 2 * n - 1 }
+                        : { type: 'codeptr', name: null, seg: scoped(lo), addr: lo, range: n - 1, hi };
+                    if (rts) dir.rts = true;
+                    out.push({
+                        at: key(T.seg.index, w[0].a), dir,
+                        msg: `Jump table${word ? '' : 's'} at $${h4(lo)}${word ? '' : ` (low) and $${h4(hi)} (high)`}: ` +
+                            `${n} entr${n > 1 ? 'ies' : 'y'} dispatched by ${how} at $${h4(w[4].a)}` +
+                            `${rts ? ', each the address minus 1' : ''} — click to review`,
+                    });
+                }
+            });
+            return out;
         }
 
         // Find routines called with inline data after the jsr: they pull
@@ -1304,7 +1814,7 @@
         function findPointerPairs() {
             // Atari only: page registers take the high byte of an address, and
             // the display list pointers are words (C64 has other chips there)
-            const atari = img.type !== 'prg';
+            const atari = platform === 'atari';
             const PAGE_REGS = atari ? new Map([[0xD407, 'PMBASE'], [0xD409, 'CHBASE'], [0x2F4, 'CHBAS']]) : new Map();
             // OS routines that take a code address in registers: SETVBV gets the
             // VBI routine in Y (low) and X (high), with A = 6 immediate / 7 deferred
@@ -1645,6 +2155,8 @@
                     const p = T.ptr.get(off + 1);
                     if (p) {
                         const pl = sym(p.ts, p.t);
+                        // < and > bind tighter than -: group the adjusted address
+                        if (pl && p.adj) return [['pun', '#' + p.part + '['], ['sym', pl.name, key(p.ts, p.t)], ['pun', '-' + p.adj + ']']];
                         if (pl) return [['pun', '#' + p.part], ['sym', pl.name, key(p.ts, p.t)]];
                     }
                     const c = consts.get(lo);
@@ -1807,11 +2319,14 @@
                 } else if (p) {
                     const l = sym(p.ts, p.t);
                     const tv = l ? ['sym', l.name, key(p.ts, p.t), a] : ['num', '$' + h4(p.t), key(p.ts, p.t), a];
+                    const adj = p.adj ? [['pun', '-' + p.adj]] : [];
                     if (p.part === '<' && p.other === a + 1 && a + 1 <= end && !T.ilen[off + 1] && !hasLabelDef(T, a + 1)) {
-                        dataLine(T, a, 2, [['dir', 'dta '], ['pun', 'a('], tv, ['pun', ')']]);
+                        dataLine(T, a, 2, [['dir', 'dta '], ['pun', 'a('], tv].concat(adj, [['pun', ')']]));
                         a += 2;
                     } else {
-                        dataLine(T, a, 1, [['dir', 'dta '], ['pun', p.part], tv]);
+                        // < and > bind tighter than -: group the adjusted address
+                        dataLine(T, a, 1, p.adj ? [['dir', 'dta '], ['pun', p.part + '['], tv, ['pun', '-' + p.adj + ']']]
+                            : [['dir', 'dta '], ['pun', p.part], tv]);
                         a++;
                     }
                 } else if (f === FMT.text) {
@@ -2236,6 +2751,7 @@
             .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1])
             .map(([d]) => d);
         const removed = new Set();
+        const quiet = Object.assign({}, project.options, { suggest: false });
         let i = 0;
         return {
             total: order.length,
@@ -2244,7 +2760,7 @@
                 if (i >= order.length) return null;
                 const d = order[i++];
                 const removable = (d.type !== 'relocate' && !touchesLoaded(model, model.mapDirective(d))) ||
-                    sameCode(model, analyze(img, all.filter((x) => x !== d && !removed.has(x)), project.options));
+                    sameCode(model, analyze(img, all.filter((x) => x !== d && !removed.has(x)), quiet));
                 if (removable) removed.add(d);
                 return { d, removable };
             },
