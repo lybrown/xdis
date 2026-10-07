@@ -857,6 +857,7 @@
         // The end of the block (exclusive), or -1 if the bytes after the brk
         // at `at` aren't one. read(a) returns a byte or -1.
         const acornBrk = platform === 'bbc';
+        const errEnds = new Set();       // keys of zeros marked only as the end of an error block
         function errorBlock(at, read) {
             if (read(at + 1) < 0) return -1;
             let a = at + 2, n = 0;
@@ -964,13 +965,23 @@
                     if (s <= 0) break;                         // unloaded, switched off or unknown bank
                     const op = OPS[byteAt(s, i)];
                     if (op.code === 0 && acornBrk) {
-                        // a BRK error: the brk is code, the error block data
+                        // a BRK error: the brk is code, the error block data.
+                        // The zero ending one block may be the next one's brk
+                        // (the MOS shares them), so it can be claimed again.
                         const T = S[s - 1];
                         const off = i - T.seg.start;
-                        const e = !T.fmt[off] && errorBlock(i, (x) => (x <= T.seg.end ? T.seg.data[x - T.seg.start] : -1));
+                        const vk = key(s, i);
+                        const e = (!T.fmt[off] || errEnds.has(vk)) && errorBlock(i, (x) => (x <= T.seg.end ? T.seg.data[x - T.seg.start] : -1));
                         if (e > 0) {
                             T.ilen[off] = 1;
-                            for (let x = off + 1; x < e - T.seg.start; x++) if (!T.fmt[x]) T.fmt[x] = FMT.text;
+                            T.fmt[off] = 0;
+                            errEnds.delete(vk);
+                            const end = e - T.seg.start;
+                            for (let x = off + 1; x < end; x++) {
+                                if (T.ilen[x] || T.fmt[x]) continue;
+                                T.fmt[x] = FMT.text;
+                                if (x === end - 1) errEnds.add(key(s, T.seg.start + x));
+                            }
                         }
                         break;
                     }

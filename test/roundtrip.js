@@ -246,6 +246,12 @@ const cases = [
                 expect: ['    brk', "dta $FC,c'Bad',$00", 'sta l7000'] },
             { name: 'brk-error-mads', type: 'raw', org: 0x1900, bytes: brk, include: ['symbols/bbcmos.dop'], directives: ['code $1900'],
                 options: { syntax: 'mads' }, mads: true, expect: ['    brk'] },
+            // the zero ending one error block is the next one's brk (as in the MOS)
+            { name: 'brk-error-shared', type: 'raw', org: 0x1900, include: ['symbols/bbcmos.dop'], directives: ['code $1900'],
+                bytes: Uint8Array.from([0xC9, 0x05, 0xB0, 0x05,                     // cmp #5 / bcs second
+                    0x00, 0xFE, 0x42, 0x61, 0x64,                                   // brk / $FE "Bad"
+                    0x00, 0xFB, 0x4B, 0x65, 0x79, 0x00]),                           // second: brk / $FB "Key" $00
+                expect: ["dta $FE,c'Bad'", "dta $FB,c'Key',$00"], expectRe: [/brk\s+; 1904:/, /brk\s+; 1909:/] },
             { name: 'brk-error-gap', type: 'raw', org: 0x1900, bytes: brk, include: ['symbols/bbcmos.dop'], directives: ['code $1918'],
                 problems: [/Possible code at \$1900-\$1914 that nothing traces into/] },
         ];
