@@ -364,6 +364,32 @@ function check(name, ok, detail) {
         log('skip', 'no jsr found');
     }
 
+    // 10b0. jump between sections of code and data
+    {
+        const L = S.listing.lines;
+        const cls = (i) => (L[i].k === 'ins' ? 'code' : L[i].k === 'data' ? 'data' : L[i].k === 'seg' || L[i].k === 'dir' ? 'break' : null);
+        const prevCls = (i) => { for (let j = i - 1; j >= 0; j--) if (cls(j)) return cls(j); return null; };
+        S.cur = S.anchor = 0;
+        key('}');
+        const d1 = S.cur;
+        check('} goes to the next data', L[d1].k === 'data' && prevCls(d1) !== 'data', `line ${d1} ${L[d1].k}`);
+        key(']');
+        const c1 = S.cur;
+        check('] goes to the next code', c1 > d1 && L[c1].k === 'ins' && prevCls(c1) !== 'code', `line ${c1}`);
+        key(']');
+        const c2 = S.cur;
+        check('] again goes to a later run of code', c2 > c1 && L[c2].k === 'ins' && prevCls(c2) !== 'code', `line ${c2}`);
+        S.cur = S.anchor = c2 + 2;
+        key('[');
+        check('[ inside a run goes to its start', S.cur === c2, `line ${S.cur}`);
+        key('[');
+        check('[ at the start goes to the previous run', S.cur === c1, `line ${S.cur}`);
+        key('{');
+        check('{ goes back to data', S.cur < c1 && L[S.cur].k === 'data' && prevCls(S.cur) !== 'data', `line ${S.cur}`);
+        key('Escape');
+        check('Esc returns from a section jump', S.cur === c1, `line ${S.cur}`);
+    }
+
     // 10a. find in the source
     key('f', { ctrlKey: true });
     const fbar = doc.getElementById('findbar'), fin = doc.getElementById('find-input');

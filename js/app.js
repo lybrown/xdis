@@ -1005,6 +1005,50 @@
     // ------------------------------------------------------------------
     // Navigation
 
+    // Jump to the next (dir 1) or previous (dir -1) run of code or data
+    // lines. Labels, comments and equates don't break a run; segment and
+    // org lines do. Going back first goes to the start of the current run.
+    function jumpSection(kind, dir) {
+        const L = S.listing.lines;
+        const cls = (i) => {
+            const k = L[i].k;
+            return k === 'ins' ? 'code' : k === 'data' ? 'data' : k === 'seg' || k === 'dir' ? 'break' : null;
+        };
+        // first line of the run of `kind` that line i is in
+        const runStart = (i) => {
+            let first = i;
+            for (let j = i - 1; j >= 0; j--) {
+                const c = cls(j);
+                if (c === kind) first = j;
+                else if (c) break;
+            }
+            return first;
+        };
+        let target = -1;
+        if (dir > 0) {
+            let inRun = cls(S.cur) === kind;
+            for (let i = S.cur + 1; i < L.length; i++) {
+                const c = cls(i);
+                if (c === kind && !inRun) { target = i; break; }
+                if (c && c !== kind) inRun = false;
+            }
+        } else {
+            for (let i = S.cur - 1; i >= 0; i--) {
+                if (cls(i) === kind) {
+                    const st = runStart(i);
+                    if (st < S.cur) { target = st; break; }
+                }
+            }
+        }
+        const name = kind === 'code' ? 'code' : 'data';
+        if (target < 0) return setStatus(`No ${dir > 0 ? 'more' : 'earlier'} ${name}`, true);
+        S.back.push(viewAnchor());
+        if (S.back.length > 200) S.back.shift();
+        S.fwd = [];
+        moveTo(target, false, true);
+        flash(target);
+    }
+
     function goKey(k, push) {
         let i = lineForKey(k, 'label');
         let msg = '';
@@ -1443,6 +1487,8 @@
             ['Click', 'An address in an Access: or Callers: comment jumps to that instruction'],
             ['Esc / Alt+←', 'Go back · Alt+→ forward'],
             ['G', 'Go to address or label'],
+            ['] / [', 'Next / previous section of code'],
+            ['} / {', 'Next / previous section of data'],
             ['Ctrl+F', 'Find in the source (also the / key) · Enter or F3 next, Shift+Enter or Shift+F3 previous'],
             ['X', 'Show cross references in the inspector'],
             ['Shift+↑↓ / drag', 'Select a range'],
@@ -2897,6 +2943,8 @@
         if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); return moveTo(e.key === 'Home' ? 0 : 1e9, e.shiftKey); }
         if (e.key === 'Enter') { e.preventDefault(); return follow(); }
         if (e.key === 'Escape' || e.key === 'Backspace') { e.preventDefault(); return goBack(false); }
+        const sections = { ']': ['code', 1], '[': ['code', -1], '}': ['data', 1], '{': ['data', -1] };
+        if (sections[e.key]) { e.preventDefault(); return jumpSection(...sections[e.key]); }
         const keys = {
             c: 'code', d: 'data', t: 'text', w: 'word', a: 'address', p: 'codeptr', v: 'vector',
             u: 'undefine', n: 'name', l: 'name', ';': 'comment', ':': 'note', o: 'operand', k: 'constant', r: 'relocate',
