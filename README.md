@@ -321,6 +321,11 @@ test file. Where xdis intentionally differs:
   byte become `:N dta $XX`. Optionally (*Repeat patterns up to* under
   *Project*), repeated patterns become `:N dta $XX,$YY,...` too.
 * Pointer tables and vectors are shown as `dta a(label)`.
+* A branch that the instruction before it always takes (`lda #$20` / `bne`,
+  `clc` / `bcc`, `sec` / `bcs`, `clv` / `bvc`) is treated as a jump: the bytes
+  after it aren't traced from there. If anything jumps to the branch itself,
+  they are. Code that was only reached by falling through such a branch shows
+  up as a code suggestion instead.
 * On the BBC Micro, a `brk` followed by an error block (an error number, a
   printable message and a zero) is traced as `brk` and ends the path, with the
   block shown as `dta $FC,c'Bad address',$00`. The CLI stops at every `brk`.

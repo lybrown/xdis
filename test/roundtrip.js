@@ -250,6 +250,18 @@ const cases = [
                 problems: [/Possible code at \$1900-\$1914 that nothing traces into/] },
         ];
     })(),
+    // forced branches: lda #$20 / bne is always taken, so the bytes after it
+    // aren't traced; a jump to the branch itself makes them code again
+    ...(() => {
+        const stub = [0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0];
+        return [
+            { name: 'forced-branch', type: 'prg', expect: ['dta $A9,$FF'], absent: ['lda #$FF'],
+                bytes: Uint8Array.from(stub.concat([0xA9, 0x20, 0xD0, 0x02, 0xA9, 0xFF, 0x60])) },   // lda #$20 / bne / (data) / rts
+            { name: 'forced-branch-jumped-to', type: 'prg', expect: ['iny'],
+                bytes: Uint8Array.from(stub.concat([0xA9, 0x20, 0xD0, 0x04, 0xC8, 0x60, 0x00, 0x00,     // lda #$20 / bne / iny / rts
+                    0x4C, 0x0F, 0x08])) },                                                             // jmp to the bne
+        ];
+    })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests

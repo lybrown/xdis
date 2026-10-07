@@ -935,6 +935,17 @@
             }
         }
 
+        // Is branch op always taken after instruction p ({op, lo})?
+        const forcedFall = new Map();    // forced branch key -> the address after it
+        function forcedBranch(p, op) {
+            const mn = p.op.mn;
+            if ((mn === 'lda' || mn === 'ldx' || mn === 'ldy') && p.op.mode === 'imm') {
+                const v = p.lo;
+                return op.mn === 'bne' ? v !== 0 : op.mn === 'beq' ? v === 0 : op.mn === 'bpl' ? v < 0x80 : op.mn === 'bmi' ? v >= 0x80 : false;
+            }
+            return (mn === 'clc' && op.mn === 'bcc') || (mn === 'sec' && op.mn === 'bcs') || (mn === 'clv' && op.mn === 'bvc');
+        }
+
         function trace(entry, from) {
             traced = true;
             entry &= 0xFFFF;
@@ -947,6 +958,7 @@
             while (work.length) {
                 let [i, cs] = work.pop();
                 if (cs) cs = { w: cs.w.slice(), a: cs.a, x: cs.x, y: cs.y };
+                let prev = null, jumpedIn = true;              // the instruction before; reached by a jump?
                 for (;;) {
                     const s = segAt(cs, i);
                     if (s <= 0) break;                         // unloaded, switched off or unknown bank
@@ -964,7 +976,15 @@
                     }
                     if (op.code === 0 || op.jam || (op.illegal && !opts.illegal)) break;
                     const vk = key(s, i);
-                    if (visited.has(vk)) break;
+                    if (visited.has(vk)) {
+                        // a branch taken as forced, now reached by a jump: the
+                        // flags are unknown here, so what follows it runs too
+                        if (jumpedIn && forcedFall.has(vk)) {
+                            work.push([forcedFall.get(vk), cs]);
+                            forcedFall.delete(vk);
+                        }
+                        break;
+                    }
                     const T = S[s - 1];
                     const off = i - T.seg.start;
                     if (T.fmt[off]) break;
@@ -1055,6 +1075,15 @@
                     } else if (t >= 0) {
                         addRef(tk, 'access', fromKey);
                     }
+                    // a branch the instruction before always takes
+                    // (lda #$20 / bne, clc / bcc): what follows it isn't code
+                    // on this path
+                    if (op.branch && !jumpedIn && prev && forcedBranch(prev, op)) {
+                        forcedFall.set(vk, i + op.len);
+                        break;
+                    }
+                    prev = { op, lo };
+                    jumpedIn = false;
                     i += op.len;
                     if (i > 0xFFFF) break;
                 }
