@@ -410,6 +410,7 @@ function check(name, ok, detail) {
         const rowsEl = doc.getElementById('rows');
         const at = (y) => Math.floor(y / 18);
         check('the listing does not scroll by itself', w.getComputedStyle(lst).overflowY === 'hidden' && bar.scrollHeight > bar.clientHeight);
+        check('dragging selects lines, not text', w.getComputedStyle(lst).userSelect === 'none');
         bar.scrollTop = 9000;
         bar.dispatchEvent(new w.Event('scroll'));
         check('dragging the scrollbar moves the listing and draws it at once', lst.scrollTop === bar.scrollTop &&

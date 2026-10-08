@@ -170,6 +170,7 @@ main {
     overflow-x: auto;
     overflow-y: hidden;
     overflow-anchor: none;      /* rows are replaced while scrolling: don't let the browser shift them */
+    user-select: none;          /* selection is by line (Ctrl+C copies it as assembly) */
     font: 13px var(--mono);
     outline: none;
     min-height: 0;
