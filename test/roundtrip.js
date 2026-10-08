@@ -287,6 +287,21 @@ const cases = [
                 includeOff: { 'bbchw.dop': [] }, expect: ['ldx #$05', 'ldy #$07'] },
         ];
     })(),
+    // enums: an instruction's immediate is a value of a named set; values the
+    // enum doesn't name stay numbers; the same value elsewhere is untouched
+    ...(() => {
+        const stub = [0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0];
+        const bytes = Uint8Array.from(stub.concat([0xA9, 0x02, 0x8D, 0x20, 0xD0,   // lda #2 / sta $D020
+            0xA9, 0x02, 0x85, 0xFB, 0xC9, 0x07, 0xD0, 0x00,                        // lda #2 / sta $FB / cmp #7 / bne
+            0xA2, 0x02, 0x60]));                                                   // ldx #2 / rts
+        const directives = ['enum color BLACK=0 WHITE=1 RED=2', 'enum state IDLE=0 RUNNING=1 DEAD=2',
+            'enumop $080D color', 'enumop $0812 state', 'enumop $0816 state'];
+        const expect = ['lda #RED', 'lda #DEAD', 'cmp #$07', 'ldx #$02', 'BLACK equ $00', 'DEAD equ $02'];
+        return [
+            { name: 'enums', type: 'prg', bytes, directives, expect, expectRe: [/^BLACK equ \$00 +; enum color$/m] },
+            { name: 'enums-mads', type: 'prg', bytes, directives, expect, options: { syntax: 'mads' }, mads: true },
+        ];
+    })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests

@@ -349,11 +349,11 @@
     // carried through .dop files as ";xdis ..." comment lines.
 
     const CLI_TYPES = ['code', 'data', 'vector', 'constant', 'address', 'codeptr'];
-    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss', 'inline'];
+    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss', 'inline', 'enum', 'enumop'];
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
-    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1, bank: 1, inline: 1 };
+    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1, bank: 1, inline: 1, enum: 1, enumop: 1 };
     // Inline data after a jsr: how the called routine finds its end and
     // where execution continues.
     const INLINE_MODES = {
@@ -432,6 +432,8 @@
     function directiveString(d) {
         if (d.type === 'relocate') return `relocate ${specString(d)} $${hx(d.run)}`;
         if (d.type === 'bank') return `bank ${specString(d)} ${d.bank}`;
+        if (d.type === 'enum') return `enum ${d.enum}${d.members.map(([n, v]) => ` ${n}=$${h2(v)}`).join('')}`;
+        if (d.type === 'enumop') return `enumop ${d.seg ? segText(d.seg) + ':' : ''}$${hx(d.addr)} ${d.enum}`;
         if (d.type === 'inline') return `inline ${specString(d)} ${d.mode}${d.lead ? ' lead ' + d.lead : ''}${d.brk ? ' brk' : ''}`;
         if (d.type === 'hi' || d.type === 'lo') return `${d.type} ${specString(d)}${d.target !== undefined ? ' $' + hx(d.target) : ''}`;
         if (d.type === 'comment' || d.type === 'note' || d.type === 'operand') {
@@ -469,6 +471,26 @@
             const d = parseSpec(type, r[1]);
             d.bank = parseInt(r[2], 10);
             return d;
+        }
+        if (type === 'enum') {
+            // enum NAME [MEMBER=$VALUE ...]: a named set of byte values
+            // (hex, as everywhere in .dop files)
+            const r = /^(\S+)((?:\s+\S+)*)$/.exec(m[2]);
+            if (!r || !LABEL_RE.test(r[1])) throw new Error(`Bad enum: ${m[2]} (expected e.g. enum color BLACK=$00 WHITE=$01)`);
+            const members = [];
+            for (const t of r[2].trim().split(/\s+/).filter(Boolean)) {
+                const mm = /^([A-Za-z_?@][\w?@]*)=\$?([0-9a-fA-F]{1,2})$/.exec(t);
+                if (!mm) throw new Error(`Bad enum member: ${t} (expected NAME=$XX)`);
+                members.push([mm[1], parseInt(mm[2], 16)]);
+            }
+            return { type, name: null, seg: 0, addr: 0, range: 0, enum: r[1], members };
+        }
+        if (type === 'enumop') {
+            // enumop [seg:]$ADDR ENUM: the immediate of the instruction at
+            // ADDR is a value of ENUM
+            const r = /^(?:(b?\d+):)?\$?([0-9a-fA-F]{1,4})\s+(\S+)$/.exec(m[2]);
+            if (!r || !LABEL_RE.test(r[3])) throw new Error(`Bad enumop: ${m[2]} (expected e.g. enumop $2034 color)`);
+            return { type, name: null, seg: r[1] ? segNum(r[1]) : 0, addr: parseInt(r[2], 16), range: 0, enum: r[3] };
         }
         if (type === 'inline') {
             // inline [name=][seg:]$ROUTINE MODE [lead N] [brk]: each jsr to
@@ -735,7 +757,7 @@
         // loads that address (with the block moved out, that one is there).
         const otherLoads = (a, parent) => real.some((s) => s.index !== parent && a >= s.start && a <= s.end);
         const toRun = (d) => {
-            if (d.type === 'relocate') return d;
+            if (d.type === 'relocate' || d.type === 'enum' || d.type === 'constant') return d;    // not addresses
             for (const p of pieces) {
                 const n = p.data.length;
                 if (d.addr < p.load || d.addr >= p.load + n) continue;
@@ -789,6 +811,9 @@
         const labels = new Map();
         const names = new Map();
         const consts = new Map();
+        const enums = new Map();         // name -> {name, byValue: value -> member, members: [[name, value]]}
+        const memberOf = new Map();      // member name -> {e, v}
+        const enumOps = new Map();       // instruction key -> enumop directive
         const comments = new Map();
         const notes = new Map();
         const operands = new Map();
@@ -804,6 +829,23 @@
         for (const d of directives) {
             if (d.seg && d.seg > segs.length) {
                 warn(`${d.type} ${specString(d)}: no segment ${d.seg}`, undefined, d);
+                continue;
+            }
+            if (d.type === 'enum') {
+                const e = enums.get(d.enum) || { name: d.enum, byValue: new Map(), members: [] };
+                enums.set(d.enum, e);
+                for (const [n, v] of d.members) {
+                    if (e.members.some(([n2]) => n2 === n)) continue;
+                    e.members.push([n, v]);
+                    if (!e.byValue.has(v)) e.byValue.set(v, n);
+                    const prev = memberOf.get(n);
+                    if (prev && prev.v !== v) warn(`Enum member ${n} is $${h2(prev.v)} in ${prev.e} and $${h2(v)} in ${d.enum}`, undefined, d);
+                    else memberOf.set(n, { e: d.enum, v });
+                }
+                continue;
+            }
+            if (d.type === 'enumop') {
+                enumOps.set(key(resolveSeg(d, d.addr), d.addr), d);
                 continue;
             }
             if (d.type === 'constant') {
@@ -2282,7 +2324,7 @@
         }
 
         return {
-            img, opts, S, mem, finalOwner, cover, refs, need, labels, names, consts,
+            img, opts, S, mem, finalOwner, cover, refs, need, labels, names, consts, enums, enumOps,
             comments, notes, operands, warnings, labelAt, isCodeStart, segOf,
             pieces: R.pieces, holesOf: R.holesOf, loadOwner: R.loadOwner, mapDirective: R.toRun, loadToRun, pseudoRefs,
         };
@@ -2298,10 +2340,11 @@
     const IND = '    ';
 
     function render(model) {
-        const { img, opts, S, refs, comments, notes, operands, consts } = model;
+        const { img, opts, S, refs, comments, notes, operands, consts, enums, enumOps } = model;
         const lines = [];
         const used = new Map();       // base label name -> key, for externs
         const usedConsts = new Map();
+        const usedEnums = new Set();     // enums with a member used: all their members get equates
         const defined = new Set();
         const forwardZ = [];          // [part, label] needing z: if defined later
         const problems = model.warnings.slice();
@@ -2413,6 +2456,16 @@
                 case 'imp': return [];
                 case 'acc': return [['op', '@']];
                 case 'imm': {
+                    // a value of the enum this instruction was given; values
+                    // the enum doesn't name stay numbers
+                    const eo = enumOps.get(key(T.seg.index, i));
+                    const en = eo && enums.get(eo.enum);
+                    if (en) {
+                        const member = en.byValue.get(lo);
+                        if (member === undefined) return [['pun', '#'], ['num', '$' + h2(lo)]];
+                        usedEnums.add(en.name);
+                        return [['pun', '#'], ['sym', member]];
+                    }
                     const p = T.ptr.get(off + 1);
                     if (p) {
                         const pl = sym(p.ts, p.t);
@@ -2466,6 +2519,7 @@
                     continue;
                 }
                 for (const [v, c] of consts) if (c === name) usedConsts.set(c, v);
+                for (const en of enums.values()) if (en.members.some(([n]) => n === name)) usedEnums.add(en.name);
             }
         }
 
@@ -2740,6 +2794,19 @@
             if (defined.has(name) || used.has(name)) continue;
             head.push({ k: 'equ', s: 0, a: -1, n: 0, p: [['sym', name], ['dir', ' equ '], ['num', '$' + h2(v)]], c: 'constant' });
         }
+        // every member of each enum in use, in value order
+        const emitted = new Set(usedConsts.keys());
+        for (const en of enums.values()) {
+            if (!usedEnums.has(en.name)) continue;
+            let first = true;
+            for (const [name, v] of en.members.slice().sort((x, y) => x[1] - y[1])) {
+                if (defined.has(name) || used.has(name) || emitted.has(name)) continue;
+                emitted.add(name);
+                head.push({ k: 'equ', s: 0, a: -1, n: 0, p: [['sym', name], ['dir', ' equ '], ['num', '$' + h2(v)]],
+                    c: '', u: first ? 'enum ' + en.name : undefined });
+                first = false;
+            }
+        }
         const all = head.concat(lines);
 
         // --- index: (seg, addr) -> line
@@ -2940,6 +3007,29 @@
         return out;
     }
 
+    // The instruction at (seg, addr) takes its immediate from enum `name`
+    // (or from none, when name is empty).
+    function setEnumOp(dirs, seg, addr, name) {
+        const out = dirs.filter((d) => !(d.type === 'enumop' && d.addr === addr && (d.seg || 0) === seg));
+        if (name) out.push({ type: 'enumop', name: null, seg, addr, range: 0, enum: name });
+        return out;
+    }
+
+    // Name `value` in enum `name` as `member`, or remove its name when member
+    // is empty. Creates the enum when the project doesn't have it yet.
+    function setEnumMember(dirs, name, value, member) {
+        let found = false;
+        const out = dirs.map((d) => {
+            if (d.type !== 'enum' || d.enum !== name) return d;
+            const members = d.members.filter(([n, v]) => v !== value && n !== member);
+            if (!found && member) members.push([member, value]);
+            found = true;
+            return Object.assign({}, d, { members: members.sort((x, y) => x[1] - y[1]) });
+        });
+        if (!found) out.push({ type: 'enum', name: null, seg: 0, addr: 0, range: 0, enum: name, members: member ? [[member, value]] : [] });
+        return out;
+    }
+
     // ------------------------------------------------------------------
     // Projects
 
@@ -3084,7 +3174,7 @@
         defaultOptions, newProject, allDirectives, serializeProject, deserializeProject,
         redundancyScan, sameCode, TRACE_TYPES,
         toBase64, fromBase64,
-        edit: { setName, markCode, markData, markPointers, undefine, setText, setConstant, subtract, addRelocation, removeRelocation },
+        edit: { setName, markCode, markData, markPointers, undefine, setText, setConstant, setEnumOp, setEnumMember, subtract, addRelocation, removeRelocation },
         CLI_TYPES, EXT_TYPES, DATA_TYPES, POINTER_TYPES,
     };
 });

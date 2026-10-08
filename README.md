@@ -145,7 +145,8 @@ Click a line or select a range (shift+arrows or drag), then:
 | `N` | Name the address (double-click a label also works) |
 | `;` `:` | Line comment, or block comment above the line |
 | `O` | Operand override, e.g. `#<buffer` |
-| `K` | Name an immediate constant (like `dis -C`) |
+| `E` | Enum value: this immediate is a value of a named set |
+| `K` | Name an immediate constant everywhere (like `dis -C`) |
 | `R` | Relocate: the bytes are loaded here but run elsewhere (`org r:`) |
 | `>` `<` | The immediate (or picked byte) is the high / low byte of an address |
 | `Enter` | Follow the operand (or double-click / Ctrl+click a symbol) |
@@ -269,6 +270,26 @@ data whose layout is known:
 
 The machine comes from the file type or the symbol sets in use. Each structure
 is one suggestion that adds all of its directives.
+
+Enums
+-----
+
+A `constant` (`K`, like `dis -C`) names a value in every immediate operand,
+which is rarely what you want: `#$00` is a colour in one place and a counter
+in the next. An enum is a named set of values that you attach to individual
+instructions:
+
+    ;xdis enum color BLACK=$00 WHITE=$01 RED=$02
+    ;xdis enumop $2034 color
+
+The instruction at `$2034` then reads `lda #RED`, while other `lda #$02`
+stay as they are. A value the enum doesn't name stays a number. Every member
+of an enum that is used gets an `equ`, the first marked `; enum color`. Values
+are hex, as everywhere in `.dop` files.
+
+Press `E` on an instruction with an immediate operand to choose its enum (or
+type a new one) and name the value there. The inspector shows the operand's
+enum with a picker, and the name of its value, which you can edit.
 
 Pointers in immediates
 ----------------------

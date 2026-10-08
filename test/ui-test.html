@@ -121,6 +121,45 @@ function check(name, ok, detail) {
     check('constant used in operand', after.p.some((p) => p[1] === 'MYCONST'), after.p.map((p) => p[1]).join(''));
     check('constant equ emitted', /^MYCONST equ \$/m.test(asm()));
 
+    // 7b. enum value on one immediate: E, then the inspector's controls
+    {
+        const ei = S.listing.lines.findIndex((l, i) => i !== imm && l.k === 'ins' && l.p.some((p) => p[1] === '#'));
+        const eLn = S.listing.lines[ei];
+        const T = S.model.S[eLn.s - 1];
+        const v = T.seg.data[eLn.a - T.seg.start + 1];
+        cursorTo(ei);
+        key('e');
+        await sleep(20);
+        check('E opens the enum dialog', doc.getElementById('dlg').open && !!doc.getElementById('en-enum'));
+        doc.getElementById('en-enum').value = 'testenum';
+        doc.getElementById('en-enum').dispatchEvent(new w.Event('input'));
+        doc.getElementById('en-member').value = 'TESTVAL';
+        doc.getElementById('en-member').dispatchEvent(new w.Event('input'));
+        doc.querySelector('#dlg button[value=ok]').click();
+        await sleep(50);
+        const en = S.model.enums.get('testenum');
+        check('the enum and its member are defined', en && en.byValue.get(v) === 'TESTVAL', en && JSON.stringify(en.members));
+        const eAfter = S.listing.lines[lineAt(eLn.s, eLn.a, 'ins')];
+        check('the operand uses the member', eAfter.p.some((p) => p[1] === 'TESTVAL'), eAfter.p.map((p) => p[1]).join(''));
+        check('the enum equates are emitted', new RegExp(`^TESTVAL equ \\$${X.h2(v)} +; enum testenum$`, 'm').test(asm()));
+        check('other uses of the value are untouched', S.listing.lines.filter((l) => l.k === 'ins' && l.p.some((p) => p[1] === 'TESTVAL')).length === 1);
+        cursorTo(lineAt(eLn.s, eLn.a, 'ins'));
+        key('ArrowDown');
+        key('ArrowUp');
+        doc.querySelector('[data-tab=inspect]').click();
+        await sleep(80);
+        const sel = doc.getElementById('in-enum');
+        check('the inspector shows the enum', sel && sel.value === 'testenum' && doc.getElementById('in-member').value === 'TESTVAL');
+        sel.value = '';
+        sel.dispatchEvent(new w.Event('change'));
+        await sleep(30);
+        const eOff = S.listing.lines[lineAt(eLn.s, eLn.a, 'ins')];
+        check('choosing none puts the number back', !eOff.p.some((p) => p[1] === 'TESTVAL'), eOff.p.map((p) => p[1]).join(''));
+        key('z', { ctrlKey: true });
+        key('z', { ctrlKey: true });
+        check('undo removes the enum', !S.model.enums.has('testenum'));
+    }
+
     // 8. pointer table over two data bytes
     const d2 = S.listing.lines.findIndex((l) => l.k === 'data' && l.n >= 2 && l.p[1] && l.p[1][1] === 'dta ');
     if (d2 >= 0) {

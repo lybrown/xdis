@@ -657,7 +657,8 @@
         comment: { label: 'Comment…', key: ';' },
         note: { label: 'Block comment…', key: ':' },
         operand: { label: 'Operand override…', key: 'O' },
-        constant: { label: 'Name constant…', key: 'K' },
+        constant: { label: 'Name constant (every use)…', key: 'K' },
+        enum: { label: 'Enum value…', key: 'E' },
         relocate: { label: 'Relocate (org r:)…', key: 'R' },
         targetbank: { label: 'Target bank…', key: '' },
         hibyte: { label: 'High byte of an address (#>)…', key: '>' },
@@ -712,6 +713,7 @@
             case 'note': return editText('note', curKey());
             case 'operand': return editOperand(ln);
             case 'constant': return editConstant(ln);
+            case 'enum': return editEnum(ln);
             case 'relocate': return relocateDialog(r);
             case 'targetbank': return inBankWindow(ln) ? chooseBank(ln.s, ln.a) : setStatus('The operand is not in a cartridge bank window', true);
             case 'hibyte': return editHalf(ln, 'hi');
@@ -1032,6 +1034,85 @@
         });
         if (text === null) return;
         applyText('operand', k, text.trim());
+    }
+
+    // Enums: the instruction at key k takes its immediate from enum `name`
+    // ('' for none, '+' to create one first).
+    async function setOperandEnum(k, name) {
+        const seg = X.keySeg(k), addr = X.keyAddr(k);
+        const sc = scopeSeg(seg, addr);
+        if (name === '+') {
+            const n = await promptText('New enum', '', {
+                placeholder: 'color', help: 'A named set of values, e.g. color or state. Name its values one operand at a time.',
+                validate: (t) => (!X.LABEL_RE.test(t.trim()) ? 'Invalid name' : S.model.enums.has(t.trim()) ? 'That enum exists already' : null),
+            });
+            if (n === null) return updateInspector();
+            return commit((p) => {
+                p.directives = X.edit.setEnumMember(p.directives, n.trim(), 0, '');
+                p.directives = X.edit.setEnumOp(p.directives, sc, addr, n.trim());
+            }, `New enum ${n.trim()}`);
+        }
+        commit((p) => { p.directives = X.edit.setEnumOp(p.directives, sc, addr, name); },
+            name ? `$${X.h4(addr)} uses enum ${name}` : `$${X.h4(addr)} uses no enum`);
+    }
+
+    function setEnumMember(name, value, member) {
+        if (member && !X.LABEL_RE.test(member)) return setStatus('Invalid name', true);
+        commit((p) => { p.directives = X.edit.setEnumMember(p.directives, name, value, member); },
+            member ? `${member} = $${X.h2(value)} in ${name}` : `Removed the name of $${X.h2(value)} in ${name}`);
+    }
+
+    // E: give the immediate operand an enum and name its value there.
+    async function editEnum(ln) {
+        if (!ln || ln.k !== 'ins') return setStatus('Select an instruction with an immediate operand', true);
+        const T = S.model.S[ln.s - 1];
+        const off = ln.a - T.seg.start;
+        if (X.OPS[T.seg.data[off]].mode !== 'imm') return setStatus('Select an instruction with an immediate operand', true);
+        const v = T.seg.data[off + 1];
+        const k = X.key(ln.s, ln.a);
+        const eo = S.model.enumOps.get(k);
+        const names = [...S.model.enums.keys()].sort();
+        const cur = eo ? eo.enum : names[0] || '';
+        const en = cur && S.model.enums.get(cur);
+        const body = `<div class="field"><label>Enum</label>
+            <input type="text" id="en-enum" list="en-list" value="${esc(cur)}" placeholder="color" spellcheck="false" autocomplete="off">
+            <datalist id="en-list">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist></div>
+            <div class="field"><label>Name of #$${X.h2(v)} in it</label>
+            <input type="text" id="en-member" value="${esc((en && en.byValue.get(v)) || '')}" spellcheck="false" autocomplete="off"></div>
+            <p class="dim">Only this instruction's operand changes. Values the enum doesn't name stay numbers. Leave the enum empty to remove it.</p>`;
+        let enumName = '', member = '';
+        const btn = await dialog(`Enum value for #$${X.h2(v)} at ${hexAddr(ln.a)}`, body,
+            [{ label: 'Cancel', value: 'cancel' }, { label: 'OK', value: 'ok', primary: true }], (dlg) => {
+                const ok = dlg.querySelector('button[value=ok]');
+                const enumInp = $('en-enum'), memInp = $('en-member');
+                const sync = () => {
+                    enumName = enumInp.value.trim();
+                    member = memInp.value.trim();
+                    const e2 = S.model.enums.get(enumName);
+                    if (document.activeElement !== memInp && e2) memInp.value = e2.byValue.get(v) || '';
+                    member = memInp.value.trim();
+                };
+                enumInp.addEventListener('input', sync);
+                memInp.addEventListener('input', () => { member = memInp.value.trim(); });
+                ok.addEventListener('click', (e) => {
+                    sync();
+                    if ((enumName && !X.LABEL_RE.test(enumName)) || (member && !X.LABEL_RE.test(member))) {
+                        e.preventDefault();
+                        setStatus('Invalid name', true);
+                    }
+                });
+                for (const inp of [enumInp, memInp]) {
+                    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok.click(); } });
+                }
+                (cur ? memInp : enumInp).focus();
+                sync();
+            });
+        if (btn !== 'ok') return;
+        const sc = scopeSeg(ln.s, ln.a);
+        commit((p) => {
+            p.directives = X.edit.setEnumOp(p.directives, sc, ln.a, enumName);
+            if (enumName && (member || !S.model.enums.has(enumName))) p.directives = X.edit.setEnumMember(p.directives, enumName, v, member);
+        }, enumName ? (member ? `#${member} (${enumName})` : `$${X.h4(ln.a)} uses enum ${enumName}`) : `$${X.h4(ln.a)} uses no enum`);
     }
 
     async function editConstant(ln) {
@@ -1529,7 +1610,8 @@
             ['U', 'Undefine selection (remove code/data marks)'],
             ['N', 'Name (label) the address — double-click a label too'],
             [';  /  :', 'Line comment / block comment'],
-            ['O / K', 'Operand override / name an immediate constant'],
+            ['O / K', 'Operand override / name an immediate constant everywhere'],
+            ['E', 'Enum value: this immediate is a value of a named set (enum)'],
             ['R', 'Relocate: bytes loaded here run at another address (org r:)'],
             ['> / <', 'The immediate (or picked byte) is the high / low byte of an address'],
             ['Enter', 'Follow operand — or double/Ctrl-click a symbol'],
@@ -1587,6 +1669,7 @@
         }
         if (ln.k === 'ins') {
             items.push(mi('operand', ACTIONS.operand.label, 'O'));
+            items.push(mi('enum', ACTIONS.enum.label, 'E'));
             items.push(mi('constant', ACTIONS.constant.label, 'K'));
         }
         if (inBankWindow(ln)) items.push(mi('targetbank', ACTIONS.targetbank.label, ''));
@@ -1671,7 +1754,7 @@
             const ds = d.seg || 0;
             if (ds && ds !== seg) return false;
             if (!ds && seg && S.model.finalOwner[a] !== seg && S.model.finalOwner[a]) return false;
-            if (d.type === 'constant' || d.type === 'relocate') return false;
+            if (d.type === 'constant' || d.type === 'relocate' || d.type === 'enum') return false;
             const end = d.addr + (d.type === 'vector' ? d.range | 1 : d.range);
             const inLo = d.addr <= last && end >= a;
             const inHi = d.hi !== undefined && d.hi <= last && d.hi + d.range >= a;
@@ -1737,7 +1820,21 @@
                 h += `<div class="field"><label>Immediate #$${X.h2(v)} is part of an address</label><div class="row2">
                     <button data-act="hibyte" title="Show as #>label">High byte (#&gt;) <kbd>&gt;</kbd></button>
                     <button data-act="lobyte" title="Show as #<label">Low byte (#&lt;) <kbd>&lt;</kbd></button></div></div>`;
-                h += `<div class="field"><label>Constant name for #$${X.h2(v)} <span class="dim">(all uses)</span></label>
+                // enum: this operand is a value of a named set
+                const eo = S.model.enumOps.get(k);
+                const names = [...S.model.enums.keys()].sort();
+                h += `<div class="field"><label>Enum for this operand <kbd>E</kbd></label>
+                    <select id="in-enum" data-v="${v}"><option value="">none</option>${names.map((n) =>
+                        `<option ${eo && eo.enum === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}
+                    ${eo && !S.model.enums.has(eo.enum) ? `<option selected>${esc(eo.enum)}</option>` : ''}
+                    <option value="+">New enum…</option></select></div>`;
+                if (eo) {
+                    const en = S.model.enums.get(eo.enum);
+                    const member = (en && en.byValue.get(v)) || '';
+                    h += `<div class="field"><label>Name of #$${X.h2(v)} in ${esc(eo.enum)}</label>
+                        <input type="text" id="in-member" data-v="${v}" data-enum="${esc(eo.enum)}" value="${esc(member)}" spellcheck="false" autocomplete="off"></div>`;
+                }
+                h += `<div class="field"><label>Constant name for #$${X.h2(v)} <span class="dim">(every use, like dis -C)</span></label>
                     <input type="text" id="in-const" data-v="${v}" value="${esc(S.model.consts.get(v) || '')}" spellcheck="false" autocomplete="off"></div>`;
             }
         }
@@ -1787,6 +1884,12 @@
         bindEnter('in-comment', (v) => { if (v !== comment) applyText('comment', k, v); });
         bindEnter('in-note', (v) => { if (v !== note) applyText('note', k, v); }, true);
         bindEnter('in-operand', (v) => applyText('operand', k, v.trim()));
+        bindEnter('in-member', (v) => {
+            const inp = $('in-member');
+            setEnumMember(inp.dataset.enum, +inp.dataset.v, v.trim());
+        });
+        const sel = $('in-enum');
+        if (sel) sel.addEventListener('change', () => setOperandEnum(k, sel.value));
         bindEnter('in-const', (v) => {
             const val = +$('in-const').dataset.v;
             if (v.trim() && !X.LABEL_RE.test(v.trim())) return setStatus('Invalid constant name', true);
@@ -3031,7 +3134,7 @@
         if (sections[e.key]) { e.preventDefault(); return jumpSection(...sections[e.key]); }
         const keys = {
             c: 'code', d: 'data', t: 'text', w: 'word', a: 'address', p: 'codeptr', v: 'vector',
-            u: 'undefine', n: 'name', l: 'name', ';': 'comment', ':': 'note', o: 'operand', k: 'constant', r: 'relocate',
+            u: 'undefine', n: 'name', l: 'name', ';': 'comment', ':': 'note', o: 'operand', k: 'constant', e: 'enum', r: 'relocate',
             '>': 'hibyte', '<': 'lobyte',
         };
         const key = e.key.length === 1 ? e.key : '';
