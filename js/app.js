@@ -2174,6 +2174,18 @@
         $('suggest-count').textContent = nSug;
     }
 
+    // dirs plus those of add it doesn't have yet (applying a suggestion twice
+    // adds nothing)
+    function withNew(dirs, add) {
+        const have = new Set(dirs.map(X.directiveString));
+        return dirs.concat(add.filter((d) => {
+            const t = X.directiveString(d);
+            if (have.has(t)) return false;
+            have.add(t);
+            return true;
+        }));
+    }
+
     // Suggestions that "Apply all" covers: pairs of immediates and hi/lo bytes
     function isPointerSuggestion(p) {
         return !!p.suggest && !p.kind && p.suggest.type !== 'relocate' && p.suggest.type !== 'inline';
@@ -2190,7 +2202,7 @@
             [{ label: 'Dismiss', value: 'dismiss' }, { label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]);
         if (btn === 'dismiss') return dismissSuggestion(p);
         if (btn !== 'ok') return;
-        commit((pr) => { pr.directives = pr.directives.concat(dirs); },
+        commit((pr) => { pr.directives = withNew(pr.directives, dirs); },
             dirs.length > 1 ? `Added ${dirs.length} directives` : `Added ${X.directiveString(dirs[0])}`);
     }
 
@@ -2231,7 +2243,7 @@
         if (btn === 'dismiss') return dismissSuggestion(p);
         if (btn !== 'ok') return;
         const nd = Object.assign({}, d, { type });
-        commit((pr) => { pr.directives = pr.directives.concat([nd]); }, `Added ${X.directiveString(nd)}`);
+        commit((pr) => { pr.directives = withNew(pr.directives, [nd]); }, `Added ${X.directiveString(nd)}`);
     }
 
     async function halfSuggestion(p) {
@@ -2245,7 +2257,7 @@
             [{ label: 'Dismiss', value: 'dismiss' }, { label: 'Cancel', value: 'cancel' }, { label: 'Apply', value: 'ok', primary: true }]);
         if (btn === 'dismiss') return dismissSuggestion(p);
         if (btn !== 'ok') return;
-        commit((pr) => { pr.directives = pr.directives.concat([d]); }, `Added ${X.directiveString(d)}`);
+        commit((pr) => { pr.directives = withNew(pr.directives, [d]); }, `Added ${X.directiveString(d)}`);
     }
 
     // Stop suggesting p: a "dismiss" directive at the address it points at.
@@ -2260,13 +2272,13 @@
     function applyAllPointerSuggestions() {
         const list = (S.problems || []).filter(isPointerSuggestion).map((p) => p.suggest);
         if (!list.length) return;
-        commit((pr) => { pr.directives = pr.directives.concat(list); }, `Added ${list.length} pointer directives`);
+        commit((pr) => { pr.directives = withNew(pr.directives, list); }, `Added ${list.length} pointer directives`);
     }
 
     function applyAllCodeSuggestions() {
         const list = (S.problems || []).filter((p) => p.kind === 'code').map((p) => p.suggest);
         if (!list.length) return;
-        commit((pr) => { pr.directives = pr.directives.concat(list); }, `Added ${list.length} code directives`);
+        commit((pr) => { pr.directives = withNew(pr.directives, list); }, `Added ${list.length} code directives`);
     }
 
     function gotoProblem(p) {

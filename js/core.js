@@ -1487,6 +1487,10 @@
                 }
                 for (const o of T.ptr.keys()) busy[o] = 1;
                 for (const a of reserved) if (a >= T.seg.start && a <= T.seg.end) busy[a - T.seg.start] = 1;
+                // bytes relocated elsewhere are traced (or not) where they run
+                for (const p of R.holesOf.get(T.seg.index) || []) {
+                    busy.fill(1, Math.max(0, p.load - T.seg.start), Math.min(len, p.load + p.data.length - T.seg.start));
+                }
                 for (let o = 0; o < len; o++) if (!busy[o]) nFree++;
                 busyOf.set(T, busy);
             }

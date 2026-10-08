@@ -302,6 +302,13 @@ const cases = [
             { name: 'enums-mads', type: 'prg', bytes, directives, expect, options: { syntax: 'mads' }, mads: true },
         ];
     })(),
+    // code in a relocated block is traced where it runs: its load bytes are
+    // not "untraced code"
+    { name: 'gap-code-relocated', type: 'prg', directives: ['relocate $0810+A $C000'],
+        bytes: Uint8Array.from([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
+            0x4C, 0x00, 0xC0,                                                      // jmp $C000
+            0xA9, 0x01, 0x8D, 0x20, 0xD0, 0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0x60]),   // runs at $C000
+        expect: ['org r:$C000', 'jmp lC000', 'dex'], absentProblems: [/Possible code/] },
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests
@@ -628,6 +635,11 @@ for (const c of cases) {
         const found = model.warnings.some((w) => re.test(w.msg));
         results.push(`problem ${re}: ${found ? 'found' : 'MISSING'}`);
         ok = ok && found;
+    }
+    for (const re of c.absentProblems || []) {
+        const found = model.warnings.some((w) => re.test(w.msg));
+        results.push(`absent problem ${re}: ${found ? 'PRESENT' : 'absent'}`);
+        ok = ok && !found;
     }
     for (const re of c.expectRe || []) {
         const found = re.test(asm);
