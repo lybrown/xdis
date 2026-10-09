@@ -309,6 +309,22 @@ const cases = [
             0x4C, 0x00, 0xC0,                                                      // jmp $C000
             0xA9, 0x01, 0x8D, 0x20, 0xD0, 0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0x60]),   // runs at $C000
         expect: ['org r:$C000', 'jmp lC000', 'dex'], absentProblems: [/Possible code/] },
+    // read names: instructions that read $D20A call it RANDOM, those that
+    // write it (including read-modify-write) SKREST; each equate lists its uses
+    ...(() => {
+        const bytes = Uint8Array.from([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
+            0xAD, 0x0A, 0xD2, 0x8D, 0x0A, 0xD2, 0xAE, 0x0A, 0xD2,     // lda $D20A / sta $D20A / ldx $D20A
+            0xEE, 0x0A, 0xD2, 0xBD, 0x00, 0xD2, 0x60]);               // inc $D20A / lda $D200,x / rts
+        const expect = ['lda RANDOM', 'sta SKREST', 'ldx RANDOM', 'inc SKREST', 'lda POT0,x',
+            'RANDOM equ $D20A              ; Access: 0813 l080D', 'SKREST equ $D20A              ; Access: 0810 0816'];
+        return [
+            { name: 'read-names', type: 'prg', bytes, include: ['symbols/hardware.dop'], expect, absent: ['AUDF1'] },
+            { name: 'read-names-mads', type: 'prg', bytes, include: ['symbols/hardware.dop'], expect,
+                options: { syntax: 'mads' }, mads: true },
+            { name: 'read-names-project', type: 'prg', bytes, include: ['symbols/hardware.dop'], directives: ['read NOISE=$D20A'],
+                expect: ['lda NOISE', 'sta SKREST'], absent: ['RANDOM'] },
+        ];
+    })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests

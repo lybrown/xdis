@@ -708,7 +708,7 @@
                 commit((p) => { p.directives = E.undefine(p.directives, sc, r.lo, r.hi); }, `Undefined ${rangeText(r)}`);
                 return;
             }
-            case 'name': return rename(arg !== undefined ? arg : curKey());
+            case 'name': return arg !== undefined ? rename(arg) : rename(curKey(), ln && ln.k === 'equ' ? ln.p[0][1] : undefined);
             case 'comment': return editText('comment', curKey());
             case 'note': return editText('note', curKey());
             case 'operand': return editOperand(ln);
@@ -975,13 +975,18 @@
         if (!name) return null;
         if (!X.LABEL_RE.test(name)) return 'Labels must start with a letter, _ ? or @ and contain only letters, digits, _ ? @';
         if (MNEMONICS.has(name.toLowerCase())) return `"${name}" is a mnemonic or register name`;
-        const other = S.model.names.get(name);
+        const other = S.model.names.get(name) ?? S.model.aliasNames.get(name);
         if (other !== undefined && other !== k) return `"${name}" is already used at ${hexAddr(X.keyAddr(other))}`;
         return null;
     }
 
-    async function rename(k) {
+    // shown: the name that was clicked, which may be the address's name for
+    // reading or writing instructions (hardware registers): rename that one
+    async function rename(k, shown) {
         if (k === null || k === undefined) return noAddr();
+        const al = shown && S.model.aliases.get(k);
+        const kind = al && (al.read === shown ? 'read' : al.write === shown ? 'write' : null);
+        if (kind) return renameAlias(k, kind, shown);
         const l = S.model.labelAt(k);
         const a = X.keyAddr(k);
         const cur = l && !l.off ? l.name : '';
@@ -992,6 +997,22 @@
         });
         if (name === null) return;
         applyName(k, name.trim());
+    }
+
+    async function renameAlias(k, kind, cur) {
+        const a = X.keyAddr(k);
+        const sc = scopeSeg(X.keySeg(k), a);
+        const name = await promptText(`Name for ${hexAddr(a)} where instructions ${kind} it`, cur, {
+            placeholder: cur,
+            help: `Used only by instructions that ${kind} ${hexAddr(a)}; others use its ordinary name. Leave empty to remove your name (one from a symbol set comes back).`,
+            validate: (v) => validateName(v.trim(), k),
+        });
+        if (name === null) return;
+        const same = (d) => d.type === kind && d.addr === a && (d.seg || 0) === sc;
+        commit((p) => {
+            p.directives = p.directives.filter((d) => !same(d));
+            if (name.trim()) p.directives.push({ type: kind, name: name.trim(), seg: sc, addr: a, range: 0 });
+        }, name.trim() ? `${name.trim()}: ${hexAddr(a)} where ${kind}` : `Removed the ${kind} name at ${hexAddr(a)}`);
     }
 
     function applyName(k, name) {
@@ -1234,9 +1255,9 @@
         text = text.trim();
         if (!text) return null;
         const m = /^(?:(b?\d+):)?\$?([0-9a-fA-F]{1,4})$/i.exec(text);
-        const named = S.model.names.get(text);
+        const named = S.model.names.get(text) ?? S.model.aliasNames.get(text);
         if (named !== undefined) return named;
-        for (const [name, k] of S.model.names) if (name.toLowerCase() === text.toLowerCase()) return k;
+        for (const [name, k] of [...S.model.names, ...S.model.aliasNames]) if (name.toLowerCase() === text.toLowerCase()) return k;
         for (const ln of S.listing.lines) {
             if (ln.def !== undefined && ln.p[0][1] === text) return ln.def;
         }
@@ -1361,6 +1382,14 @@
             const code = (semi >= 0 ? line.slice(0, semi) : line).trim();
             const comment = semi >= 0 ? line.slice(semi + 1).trim() : '';
             if (!code) {
+                // names for reading or writing instructions (";xdis read NAME=ADDR")
+                const rw = /^xdis\s+((?:read|write)\s+\S+)$/.exec(comment);
+                if (rw) {
+                    let d = null;
+                    try { d = X.parseDirectiveLine(rw[1]); } catch (e) { d = null; }
+                    if (d && d.name) rows.push({ d, comment: `name where instructions ${d.type} it`, heading });
+                    continue;
+                }
                 // a comment-only line followed by a blank line is a heading
                 if (comment && !/^xdis /.test(comment) && !/=/.test(comment)) heading = comment;
                 continue;
@@ -1642,7 +1671,7 @@
     // ------------------------------------------------------------------
     // Context menu
 
-    function showMenu(x, y, symKey) {
+    function showMenu(x, y, symKey, symName) {
         const ln = curLine();
         if (!ln) return;
         const menu = $('ctx');
@@ -1654,7 +1683,7 @@
         }
         if (symKey !== undefined) {
             const tl = S.model.labelAt(symKey);
-            const tn = tl ? tl.name : hexAddr(X.keyAddr(symKey));
+            const tn = symName || (tl ? tl.name : hexAddr(X.keyAddr(symKey)));
             items.push(mi('follow-sym', `Go to ${tn}`, 'Enter'));
             items.push(mi('rename-sym', `Rename ${tn}…`, ''));
             items.push('<div class="sep"></div>');
@@ -1691,7 +1720,7 @@
             menu.hidden = true;
             const a = it.dataset.a;
             if (a === 'follow-sym') goKey(symKey);
-            else if (a === 'rename-sym') rename(symKey);
+            else if (a === 'rename-sym') rename(symKey, symName);
             else if (a === 'copy') copySelection();
             else act(a);
         };
@@ -1853,8 +1882,13 @@
         }
         if (target) {
             const tl = S.model.labelAt(target[2]);
-            h += `<h3>Operand target</h3><div class="xref"><a data-k="${target[2]}">${esc(tl ? tl.name : hexAddr(X.keyAddr(target[2])))}</a>
-                <span class="dim">${hexAddr(X.keyAddr(target[2]))}</span></div>`;
+            const shown = target[0] === 'sym' ? target[1] : tl ? tl.name : hexAddr(X.keyAddr(target[2]));
+            h += `<h3>Operand target</h3><div class="xref"><a data-k="${target[2]}">${esc(shown)}</a>
+                <span class="dim">${hexAddr(X.keyAddr(target[2]))}</span>${aliasNote(target[2], shown)}</div>`;
+        }
+        const own = ln.s && ln.a >= 0 ? X.key(ln.s, ln.a) : null;
+        if (own !== null && S.model.aliases.has(own) && !target) {
+            h += `<h3>Other names</h3><div class="xref">${aliasNote(own, ln.k === 'equ' ? ln.p[0][1] : null) || '<span class="dim">none</span>'}</div>`;
         }
         const dirs = directivesAt(ln.s, a, sub !== null ? 1 : lineBytes(ln));
         if (dirs.length) {
@@ -1895,6 +1929,17 @@
             if (v.trim() && !X.LABEL_RE.test(v.trim())) return setStatus('Invalid constant name', true);
             commit((p) => { p.directives = X.edit.setConstant(p.directives, val, v.trim()); }, 'Constant updated');
         });
+    }
+
+    // The other names of an address with read/write names (hardware
+    // registers), besides `shown`
+    function aliasNote(k, shown) {
+        const al = S.model.aliases.get(k);
+        if (!al) return '';
+        const l = S.model.labelAt(k);
+        const all = [[l && !l.off ? l.name : null, 'otherwise'], [al.read, 'where read'], [al.write, 'where written']];
+        const rest = all.filter(([n]) => n && n !== shown);
+        return rest.length ? `<div class="dim">${rest.map(([n, w]) => `${esc(n)} ${w}`).join(' · ')}</div>` : '';
     }
 
     function overviewHtml() {
@@ -2822,7 +2867,7 @@
                 // symbols: follow; label definitions: rename
                 e.preventDefault();
                 const k = +sym.dataset.k;
-                if (sym.classList.contains('t-lbl')) rename(k);
+                if (sym.classList.contains('t-lbl')) rename(k, sym.textContent);
                 else goKey(k);
             } else if (byte && row) {
                 // a byte: name it (a label in the middle of a dta line)
@@ -2849,7 +2894,8 @@
         $('rows').addEventListener('contextmenu', (e) => {
             e.preventDefault();
             const sym = e.target.closest('[data-k]');
-            showMenu(e.clientX, e.clientY, sym && !sym.classList.contains('t-lbl') ? +sym.dataset.k : undefined);
+            const onSym = sym && !sym.classList.contains('t-lbl');
+            showMenu(e.clientX, e.clientY, onSym ? +sym.dataset.k : undefined, onSym ? sym.textContent : undefined);
         });
         addEventListener('mousedown', (e) => { if (!e.target.closest('#ctx')) $('ctx').hidden = true; });
         addEventListener('blur', () => { $('ctx').hidden = true; });

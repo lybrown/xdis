@@ -349,11 +349,17 @@
     // carried through .dop files as ";xdis ..." comment lines.
 
     const CLI_TYPES = ['code', 'data', 'vector', 'constant', 'address', 'codeptr'];
-    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss', 'inline', 'enum', 'enumop'];
+    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'note', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss', 'inline', 'enum', 'enumop', 'read', 'write'];
     const DATA_TYPES = ['data', 'text', 'word'];
     const POINTER_TYPES = ['vector', 'address', 'codeptr'];
     const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
-    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1, bank: 1, inline: 1, enum: 1, enumop: 1 };
+    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant: 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, relocate: 1, hi: 1, lo: 1, bank: 1, inline: 1, enum: 1, enumop: 1, read: 1, write: 1 };
+    // How an instruction uses its operand's address, for read/write names
+    // (read-modify-write counts as a write; jumps and immediates as neither).
+    const READ_OPS = new Set(['lda', 'ldx', 'ldy', 'cmp', 'cpx', 'cpy', 'bit', 'adc', 'sbc', 'and', 'ora', 'eor', 'lax', 'las']);
+    const WRITE_OPS = new Set(['sta', 'stx', 'sty', 'sax', 'sha', 'shx', 'shy', 'tas',
+        'inc', 'dec', 'asl', 'lsr', 'rol', 'ror', 'slo', 'rla', 'sre', 'rra', 'dcp', 'isc']);
+    const accessOf = (op) => (op.mode === 'imm' || op.mode === 'rel' ? null : READ_OPS.has(op.mn) ? 'read' : WRITE_OPS.has(op.mn) ? 'write' : null);
     // Inline data after a jsr: how the called routine finds its end and
     // where execution continues.
     const INLINE_MODES = {
@@ -814,6 +820,8 @@
         const enums = new Map();         // name -> {name, byValue: value -> member, members: [[name, value]]}
         const memberOf = new Map();      // member name -> {e, v}
         const enumOps = new Map();       // instruction key -> enumop directive
+        const aliases = new Map();       // key -> {read?, write?}: names used by reading / writing instructions
+        const aliasNames = new Map();    // read/write name -> key
         const comments = new Map();
         const notes = new Map();
         const operands = new Map();
@@ -829,6 +837,17 @@
         for (const d of directives) {
             if (d.seg && d.seg > segs.length) {
                 warn(`${d.type} ${specString(d)}: no segment ${d.seg}`, undefined, d);
+                continue;
+            }
+            if (d.type === 'read' || d.type === 'write') {
+                // a name for the address only where instructions read (write) it
+                if (!d.name) continue;
+                const k = key(resolveSeg(d, d.addr), d.addr);
+                const al = aliases.get(k) || {};
+                if (al[d.type] || (aliasNames.has(d.name) && aliasNames.get(d.name) !== k)) continue;
+                al[d.type] = d.name;
+                aliases.set(k, al);
+                aliasNames.set(d.name, k);
                 continue;
             }
             if (d.type === 'enum') {
@@ -2328,7 +2347,7 @@
         }
 
         return {
-            img, opts, S, mem, finalOwner, cover, refs, need, labels, names, consts, enums, enumOps,
+            img, opts, S, mem, finalOwner, cover, refs, need, labels, names, consts, enums, enumOps, aliases, aliasNames, accessOf,
             comments, notes, operands, warnings, labelAt, isCodeStart, segOf,
             pieces: R.pieces, holesOf: R.holesOf, loadOwner: R.loadOwner, mapDirective: R.toRun, loadToRun, pseudoRefs,
         };
@@ -2344,7 +2363,7 @@
     const IND = '    ';
 
     function render(model) {
-        const { img, opts, S, refs, comments, notes, operands, consts, enums, enumOps } = model;
+        const { img, opts, S, refs, comments, notes, operands, consts, enums, enumOps, aliases } = model;
         const lines = [];
         const used = new Map();       // base label name -> key, for externs
         const usedConsts = new Map();
@@ -2387,12 +2406,28 @@
             }
             return m.callers.length || m.access.length ? m : null;
         }
-        function xrefs(k, which, range) {
+        // How the instruction at reference key r uses the address
+        function refUse(r) {
+            const T = typeof r === 'number' && S[keySeg(r) - 1];
+            if (!T) return 'other';
+            return accessOf(OPS[T.seg.data[keyAddr(r) - T.seg.start]]) || 'other';
+        }
+        // uses (read/write/other) a name stands for, at an address with
+        // read/write names; null for all
+        function usesOf(name, k) {
+            const al = aliases.get(k);
+            if (!al) return null;
+            if (name === al.read) return ['read'];
+            if (name === al.write) return ['write'];
+            return ['read', 'write', 'other'].filter((u) => !al[u]);
+        }
+        function xrefs(k, which, range, uses) {
             const r = range ? refsFor(k) : refs.get(k);
             if (!r) return '';
             const out = [];
-            if (which !== 'callers' && opts.access && r.access.length) {
-                out.push('Access: ' + sortUniq(r.access.map(refName)).join(' '));
+            const access = uses ? r.access.filter((x) => uses.includes(refUse(x))) : r.access;
+            if (which !== 'callers' && opts.access && access.length) {
+                out.push('Access: ' + sortUniq(access.map(refName)).join(' '));
             }
             if (which !== 'access' && opts.callers && r.callers.length) {
                 out.push('Callers: ' + sortUniq(r.callers.map(refName)).join(' '));
@@ -2488,8 +2523,16 @@
                 case 'zp': case 'zpx': case 'zpy': case 'izx': case 'izy': tgt = lo; val = '$' + h2(lo); break;
                 default: tgt = lo | (hi << 8); val = '$' + h4(tgt);
             }
-            l = sym(ts, tgt);
             const tk = key(ts, tgt);
+            // the address's name for reading (writing) instructions, if it has one
+            const al = opts.labels && aliases.get(tk);
+            const use = al && accessOf(op);
+            if (use && al[use]) {
+                l = { name: al[use], base: al[use], baseKey: tk, off: 0 };
+                if (!used.has(l.base)) used.set(l.base, tk);
+            } else {
+                l = sym(ts, tgt);
+            }
             const v = l ? ['sym', l.name, tk] : ['num', val, tk];
             let ab = xasm && forceAbs(op, hi) ? [['pun', 'a:']] : [];
             if (xasm && l && (op.mode === 'zp' || op.mode === 'zpx' || op.mode === 'zpy') && !defined.has(l.base)) {
@@ -2790,7 +2833,7 @@
                 head.push({
                     k: 'equ', s: keySeg(k), a, n: 0, def: k,
                     p: [['lbl', name, k], ['dir', ' equ '], ['num', '$' + hx(a)]],
-                    c: '', x: xrefs(k, undefined, true), u: comments.get(k),
+                    c: '', x: xrefs(k, undefined, true, usesOf(name, k)), u: comments.get(k),
                 });
             }
         }

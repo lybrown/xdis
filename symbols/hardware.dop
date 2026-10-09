@@ -32,28 +32,28 @@ data GRACTL=d01d
 data HITCLR=d01e
 data CONSOL=d01f
 
-; GTIA Read
-;data M0PF=d000
-;data M1PF=d001
-;data M2PF=d002
-;data M3PF=d003
-;data P0PF=d004
-;data P1PF=d005
-;data P2PF=d006
-;data P3PF=d007
-;data M0PL=d008
-;data M1PL=d009
-;data M2PL=d00a
-;data M3PL=d00b
-;data P0PL=d00c
-;data P1PL=d00d
-;data P2PL=d00e
-;data P3PL=d00f
-;data TRIG0=d010
-;data TRIG1=d011
-;data TRIG2=d012
-;data TRIG3=d013
-;data PAL=d014
+; GTIA Read (names used where instructions read these addresses)
+;xdis read M0PF=d000
+;xdis read M1PF=d001
+;xdis read M2PF=d002
+;xdis read M3PF=d003
+;xdis read P0PF=d004
+;xdis read P1PF=d005
+;xdis read P2PF=d006
+;xdis read P3PF=d007
+;xdis read M0PL=d008
+;xdis read M1PL=d009
+;xdis read M2PL=d00a
+;xdis read M3PL=d00b
+;xdis read P0PL=d00c
+;xdis read P1PL=d00d
+;xdis read P2PL=d00e
+;xdis read P3PL=d00f
+;xdis read TRIG0=d010
+;xdis read TRIG1=d011
+;xdis read TRIG2=d012
+;xdis read TRIG3=d013
+;xdis read PAL=d014
 
 ; POKEY Write
 data AUDF1=d200
@@ -88,21 +88,21 @@ data P2SEROUT=d21d
 data P2IRQEN=d21e
 data P2SKCTL=d21f
 
-; POKEY Read
-;data POT0=d200
-;data POT1=d201
-;data POT2=d202
-;data POT3=d203
-;data POT4=d204
-;data POT5=d205
-;data POT6=d206
-;data POT7=d207
-;data ALLPOT=d208
-;data KBCODE=d209
-;data RANDOM=d20a
-;data SERIN=d20d
-;data IRQST=d20e
-;data SKSTAT=d20f
+; POKEY Read (names used where instructions read these addresses)
+;xdis read POT0=d200
+;xdis read POT1=d201
+;xdis read POT2=d202
+;xdis read POT3=d203
+;xdis read POT4=d204
+;xdis read POT5=d205
+;xdis read POT6=d206
+;xdis read POT7=d207
+;xdis read ALLPOT=d208
+;xdis read KBCODE=d209
+;xdis read RANDOM=d20a
+;xdis read SERIN=d20d
+;xdis read IRQST=d20e
+;xdis read SKSTAT=d20f
 
 ; PIA
 data PORTA=d300
@@ -125,7 +125,7 @@ data PENH=d40c ; Read
 data PENV=d40d ; Read
 data NMIEN=d40e
 data NMIRES=d40f ; Write
-;data NMIST=d40f ; Read
+;xdis read NMIST=d40f
 
 ; ROM
 data STDCH=e000

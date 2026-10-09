@@ -96,6 +96,22 @@ program replaces the OS, so `CIOV` and friends at `$E4xx` would otherwise name
 the program's own code. The list is saved in the project and in exported
 `.dop` files as a `;xdis off` line.
 
+Hardware registers often mean different things when read and written:
+`$D20A` is `SKREST` when written but `RANDOM` when read. A `read` directive
+gives an address a second name used only by instructions that read it (`lda`,
+`ldx`, `ldy`, `cmp`, `cpx`, `cpy`, `bit`, `adc`, `sbc`, `and`, `ora`, `eor`):
+
+    data SKREST=d20a
+    ;xdis read RANDOM=d20a
+
+`lda $D20A` then reads `lda RANDOM`, while `sta` and read-modify-write
+instructions such as `inc` use `SKREST`. Both get an `equ`, each listing only
+its own accesses. A `write` directive works the same way for writes.
+`hardware.dop` has read names for the GTIA collision and trigger registers,
+POKEY's `POT0`–`ALLPOT`, `KBCODE`, `RANDOM`, `SERIN`, `IRQST` and `SKSTAT`,
+and ANTIC's `NMIST`. Renaming one (`N` on its `equ`, or *Rename* on it in an
+operand) changes only that name.
+
 A set can name labels that start switched off with a `;xdis defaultoff NAME…`
 line. They show unticked in the viewer and are left out until switched on. In
 the BBC Micro sets these are `NMIVEC` (only used with Econet or a hard disc)

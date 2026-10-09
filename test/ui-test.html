@@ -160,6 +160,48 @@ function check(name, ok, detail) {
         check('undo removes the enum', !S.model.enums.has('testenum'));
     }
 
+    // 7c. read names (hardware.dop): renaming one from its equate leaves the
+    // ordinary name alone; the inspector lists the others
+    {
+        let ai = S.listing.lines.findIndex((l) => l.k === 'equ' && S.model.aliasNames.has(l.p[0][1]));
+        if (ai < 0) {
+            // give an address the program reads (and has an equate for) a read name
+            const eq = S.listing.lines.find((l) => l.k === 'equ' && l.def !== undefined && S.listing.lines.some((m) => m.k === 'ins' &&
+                /^(lda|ldx|ldy|cmp|and|ora|bit)$/.test(m.p[1] && m.p[1][1]) && m.p.some((p) => p[2] === l.def)));
+            if (eq) {
+                const loc = (S.img.multi && S.model.cover[X.keyAddr(eq.def)] > 1 ? X.keySeg(eq.def) + ':' : '') + '$' + X.h4(X.keyAddr(eq.def));
+                const inp = doc.getElementById('dir-add');
+                inp.value = `read TESTREAD=${loc}`;
+                inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                await sleep(30);
+                ai = S.listing.lines.findIndex((l) => l.k === 'equ' && l.p[0][1] === 'TESTREAD');
+            }
+        }
+        if (ai < 0) {
+            log('skip', 'no read name used');
+        } else {
+            const readName = S.listing.lines[ai].p[0][1], rk = S.model.aliasNames.get(readName);
+            const plain = S.model.labelAt(rk);
+            cursorTo(ai);
+            key('n');
+            await answer('MYREAD');
+            check('renaming a read name adds a read directive', S.project.directives.some((d) => d.type === 'read' && d.name === 'MYREAD'));
+            check('reads use the new name, the ordinary name stays', /\bMYREAD\b/.test(asm()) && !new RegExp(`\\b${readName}\\b`).test(asm()) &&
+                (!plain || S.model.labelAt(rk).name === plain.name));
+            const ri = S.listing.lines.findIndex((l) => l.k === 'ins' && l.p.some((p) => p[1] === 'MYREAD'));
+            cursorTo(ri);
+            key('ArrowDown');
+            key('ArrowUp');
+            doc.querySelector('[data-tab=inspect]').click();
+            await sleep(80);
+            check('the inspector shows the operand under its read name', /MYREAD/.test(doc.getElementById('tab-inspect').textContent) &&
+                (!plain || new RegExp(`${plain.name} otherwise`).test(doc.getElementById('tab-inspect').textContent)));
+            key('z', { ctrlKey: true });
+            check('undo restores the read name', new RegExp(`\\b${readName}\\b`).test(asm()));
+            if (readName === 'TESTREAD') key('z', { ctrlKey: true });
+        }
+    }
+
     // 8. pointer table over two data bytes
     const d2 = S.listing.lines.findIndex((l) => l.k === 'data' && l.n >= 2 && l.p[1] && l.p[1][1] === 'dta ');
     if (d2 >= 0) {
@@ -463,6 +505,13 @@ function check(name, ok, detail) {
         const nmi = rowOf('NMIVEC'), irq = rowOf('IRQVEC');
         check('a default-off label shows switched off before the set is used', nmi && !nmi.querySelector('[data-symon]').checked &&
             irq && irq.querySelector('[data-symon]').checked);
+        doc.querySelector('#dlg button[value=ok]').click();
+        await sleep(20);
+        doc.querySelector('[data-viewsym="hardware.dop"]').click();
+        for (let t = 0; t < 100 && !(doc.getElementById('dlg').open && doc.getElementById('sv-table')); t++) await sleep(10);
+        const rnd = rowOf('RANDOM'), skr = rowOf('SKREST');
+        check('the viewer lists read names', rnd && rnd.querySelectorAll('td')[3].textContent === 'read' && /\$D20A/.test(rnd.textContent) &&
+            skr && skr.querySelectorAll('td')[3].textContent === 'data', rnd && rnd.textContent);
         doc.querySelector('#dlg button[value=ok]').click();
         await sleep(20);
         const box = doc.querySelector('[data-sym="bbchw.dop"]');
