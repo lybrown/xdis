@@ -259,6 +259,27 @@ function check(name, ok, detail) {
         log('skip', 'no plain dta line found');
     }
 
+    // 9b2. W on a single picked byte (a word with nothing to pair it with)
+    {
+        const wl = S.listing.lines.findIndex((l) => l.k === 'data' && l.n >= 3 && l.p[1] && /^dta \$/.test(l.p.map((p) => p[1]).join('').trim()));
+        if (wl >= 0) {
+            const WL = S.listing.lines[wl];
+            S.cur = S.anchor = wl;
+            key('ArrowRight');                       // pick the line's second byte
+            const picked = S.sub;
+            const nDirs = S.project.directives.length;
+            key('w');
+            await sleep(50);
+            const li = S.listing.lines.findIndex((l) => l.s === WL.s && l.a === picked);
+            check('W on one byte renders it as a byte', S.project.directives.length === nDirs + 1 && li >= 0 &&
+                /^dta \$[0-9A-F]{2}$/.test(S.listing.lines[li].p.map((p) => p[1]).join('').trim()),
+                li >= 0 && S.listing.lines[li].p.map((p) => p[1]).join(''));
+            key('z', { ctrlKey: true });
+        } else {
+            log('skip', 'no plain dta line for W');
+        }
+    }
+
     // 9c. edit an existing directive in place
     doc.querySelector('[data-tab=directives]').click();
     const di = S.project.directives.findIndex((d) => d.name === 'my_routine');

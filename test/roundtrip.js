@@ -325,6 +325,17 @@ const cases = [
                 expect: ['lda NOISE', 'sta SKREST'], absent: ['RANDOM'] },
         ];
     })(),
+    // words over an odd number of bytes: the byte left over is shown as a
+    // byte (W on a single byte used to hang the renderer)
+    ...(() => {
+        const bytes = Uint8Array.from([0x01, 0x08, 0x0B, 0x08, 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,
+            0x60, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        return [
+            { name: 'word-odd-1', type: 'prg', bytes, directives: ['word $080E'], expect: ['dta $11  '] },
+            { name: 'word-odd-3', type: 'prg', bytes, directives: ['word $080E+2'], expect: ['dta a($2211)', 'dta $33  '] },
+            { name: 'word-odd-before-text', type: 'prg', bytes, directives: ['word $080E+1', 'text $0810+1'], expect: ['dta a($2211)', "dta c'3D'"] },
+        ];
+    })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests

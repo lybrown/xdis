@@ -2675,6 +2675,15 @@
                     }
                     return b;
                 };
+                // last byte of the whole words that fit on a line from a, or
+                // a - 1 when not even one does (an odd byte left over: shown
+                // as a byte, or the loop would never move on)
+                const wordsTo = () => {
+                    if (a >= end || T.ilen[off + 1] || hasLabelDef(T, a + 1)) return a - 1;
+                    const b = lineEnd(perLine * 2);
+                    return (b - a) % 2 === 0 ? b - 1 : b;
+                };
+                let wordEnd;
                 if (bitjmp) {
                     dataLine(T, a, 1, [['dir', 'dta '], ['num', '$2C', undefined, a]], '<--- Bit Jump');
                     a++;
@@ -2695,9 +2704,8 @@
                     const b = lineEnd(Math.max(1, opts.textPerLine | 0));
                     dataLine(T, a, b - a + 1, [['dir', 'dta ']].concat(textParts(data, off, b - start, a)));
                     a = b + 1;
-                } else if (f === FMT.word && a < end && !T.ilen[off + 1] && !hasLabelDef(T, a + 1)) {
-                    let b = lineEnd(perLine * 2);
-                    if ((b - a) % 2 === 0) b--;
+                } else if (f === FMT.word && (wordEnd = wordsTo()) > a) {
+                    const b = wordEnd;
                     const parts = [['dir', 'dta ']];
                     for (let w = a; w < b; w += 2) {
                         if (w > a) parts.push(['pun', ',']);
