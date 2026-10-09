@@ -629,8 +629,8 @@
 
 ● Bash(cd /home/lybrown/x/xdis && python3 - <<'EOF'
       p='js/app.js'; s=open(p).read()…)
-  ⎿  default via 10.0.0.1 dev eth0 proto kernel
-     10.0.0.0/20 dev eth0 proto kernel scope link src 10.0.0.2
+  ⎿  default via 192.0.2.1 dev eth0 proto kernel
+     192.0.2.2/20 dev eth0 proto kernel scope link src 192.0.2.3
   ⎿  Updated js/app.js (+3 -4)
       432          if (k === null) return noAddr();
       433          const a = X.keyAddr(k);
@@ -22973,3 +22973,1415 @@
 ✻ Crunched for 1m 38s · done 12:04 PM
 
 ※ recap: We're building xdis, the web 6502 disassembler, now live on GitHub Pages; the fix for code suggestions reappearing in relocated blocks is pushed and deployed. Next, reload the site and run "Remove directives with no effect" on your Galaxian project.
+
+❯ /export transcript.md                                                         
+  ⎿  Conversation exported to: /home/lybrown/x/xdis/transcript.md
+
+※ recap: We're building the xdis web disassembler, and the latest fix (code suggestions coming back after a relocation) is committed, pushed and live on GitHub Pages. Next, reload the site and run "Remove directives with no effect" on your Galaxian project.
+
+❯ Could we distinguish between read/write register labels based on how they're  
+  used?  E.g. hardware.dop's RANDOM vs SKREST?                                  
+  ⎿  1 skill available
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Yes. It's a good fit, and hardware.dop already has the information, just
+  disabled. The file comes from dis, which can only name an address once, so the
+  read-side names are commented out: ;data RANDOM=d20a, POT0–POT7, KBCODE,
+  SERIN, IRQST, SKSTAT, the GTIA collision registers (M0PF…P3PL), TRIG0–TRIG3,
+  PAL and NMIST, 36 in all. Today every access to $D20A is called SKREST.
+
+  Here's how I'd do it:
+
+  A directive for read names. ;xdis read RANDOM=$D20A gives an address a second
+  name, used only where an instruction reads it. The ordinary name (data 
+  SKREST=d20a) stays the default for everything else. The dis CLI ignores ;xdis
+  lines, so the file still works there. For hardware.dop that means turning the
+  36 commented lines into ;xdis read … lines. A matching write directive is easy
+  to add for symmetry, but plain names already cover writes.
+
+  Choosing the name from the opcode:
+  - Reads (lda, ldx, ldy, cmp, cpx, cpy, bit, adc, sbc, and, ora, eor, and
+    undocumented reads like lax) use the read name: lda RANDOM.
+  - Writes (sta, stx, sty, sax) use the ordinary name: sta SKREST.
+  - Read-modify-write (inc, dec, asl, lsr, rol, ror) does both. I'd use the
+    write name, since the write is usually the point, as in inc WSYNC.
+  - Neither (jmp/jsr targets, dta a(...), #</#> halves) uses the ordinary name.
+
+  Indexed modes work the same way: lda POT0,x and sta AUDF1,x.
+
+  Output. Both names get their own equate when used:
+
+  RANDOM equ $D20A              ; Access: 2134 21F0
+  SKREST equ $D20A              ; Access: 2201
+
+  Each equate's Access: list would show only the reads or only the writes, so it
+  doubles as a cross-reference for how the program uses each side of the
+  register.
+
+  Tracing is unaffected. A read name only changes how an address is shown. It
+  never marks bytes as data or code, so code and data are found exactly as now.
+
+  In the UI:
+  - The inspector for a hardware address shows both names.
+  - Renaming a symbol in the listing (double-click or N) renames the name you
+    clicked, so renaming RANDOM doesn't touch SKREST.
+  - The symbol set viewer lists read names with a small read tag.
+
+  Other sets:
+  - sys.dop's Atari shadow registers are the same in both directions, so they
+    don't need this.
+  - The C64 sets (VIC, SID, CIA) have a few read/write splits that could adopt
+    it later.
+  - In bbchw.dop, the 6522 VIA registers have the same name both ways, but a few
+    SHEILA addresses differ. The harvest script could add those if py8dis
+    provides them.
+
+  Want me to implement it: the read directive, opcode-based naming, the separate
+  equates, and the read names in hardware.dop?
+
+✻ Worked for 41s · done 8:44 PM
+
+❯ yes, implement it                                                             
+
+● Implementing it now. First I'll check how the renderer resolves an operand's
+  symbol and records it for the equates:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● The renderer tracks used symbols in a used map to generate external equates.
+  Next I'll check where names are looked up (go-to, operand overrides) and how
+  Access: lists are constructed.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Writing the core part:
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/core.js'; s=open(a).read()…)
+  ⎿  823:        const aliases = new Map();       // key -> {read?, write?}
+     : names used by reading / writing instructions
+     846:                const al = aliases.get(k) || {};
+     … +3 lines (ctrl+o to expand)
+  ⎿  Updated js/core.js (+22 -3)
+      349      // carried through .dop files as ";xdis ..." comment lines
+           .
+      350  
+      351      const CLI_TYPES = ['code', 'data', 'vector', 'constant', '
+           address', 'codeptr'];
+      352 -    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'no
+          -te', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss', 'in
+          -line', 'enum', 'enumop'];                                     
+      352 +    const EXT_TYPES = ['label', 'text', 'word', 'comment', 'no
+          +te', 'operand', 'relocate', 'hi', 'lo', 'bank', 'dismiss', 'in
+          +line', 'enum', 'enumop', 'read', 'write'];                    
+      353      const DATA_TYPES = ['data', 'text', 'word'];
+      354      const POINTER_TYPES = ['vector', 'address', 'codeptr'];
+      355      const FMT = { data: 1, text: 2, word: 3, pointer: 4 };
+      356 -    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant:
+          - 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, reloca
+          -te: 1, hi: 1, lo: 1, bank: 1, inline: 1, enum: 1, enumop: 1 };
+      356 +    const DIR_KINDS = { code: 1, data: 1, vector: 1, constant:
+          + 1, address: 1, codeptr: 1, label: 1, text: 1, word: 1, reloca
+          +te: 1, hi: 1, lo: 1, bank: 1, inline: 1, enum: 1, enumop: 1, r
+          +ead: 1, write: 1 };                                           
+      357 +    // How an instruction uses its operand's address, for read
+          +/write names                                                  
+      358 +    // (read-modify-write counts as a write; jumps and immedia
+          +tes as neither).                                              
+      359 +    const READ_OPS = new Set(['lda', 'ldx', 'ldy', 'cmp', 'cpx
+          +', 'cpy', 'bit', 'adc', 'sbc', 'and', 'ora', 'eor', 'lax', 'la
+          +s']);                                                         
+      360 +    const WRITE_OPS = new Set(['sta', 'stx', 'sty', 'sax', 'sh
+          +a', 'shx', 'shy', 'tas',                                      
+      361 +        'inc', 'dec', 'asl', 'lsr', 'rol', 'ror', 'slo', 'rla'
+          +, 'sre', 'rra', 'dcp', 'isc']);                               
+      362 +    const accessOf = (op) => (op.mode === 'imm' || op.mode ===
+          + 'rel' ? null : READ_OPS.has(op.mn) ? 'read' : WRITE_OPS.has(o
+          +p.mn) ? 'write' : null);                                      
+      363      // Inline data after a jsr: how the called routine finds i
+           ts end and
+      364      // where execution continues.
+      365      const INLINE_MODES = {
+     ...
+      820          const enums = new Map();         // name -> {name, byV
+           alue: value -> member, members: [[name, value]]}
+      821          const memberOf = new Map();      // member name -> {e,
+            v}
+      822          const enumOps = new Map();       // instruction key ->
+            enumop directive
+      823 +        const aliases = new Map();       // key -> {read?, wri
+          +te?}: names used by reading / writing instructions            
+      824 +        const aliasNames = new Map();    // read/write name ->
+          + key                                                          
+      825          const comments = new Map();
+      826          const notes = new Map();
+      827          const operands = new Map();
+     ...
+      839                  warn(`${d.type} ${specString(d)}: no segment $
+           {d.seg}`, undefined, d);
+      840                  continue;
+      841              }
+      842 +            if (d.type === 'read' || d.type === 'write') {    
+      843 +                // a name for the address only where instructi
+          +ons read (write) it                                           
+      844 +                if (!d.name) continue;                        
+      845 +                const k = key(resolveSeg(d, d.addr), d.addr); 
+      846 +                const al = aliases.get(k) || {};              
+      847 +                if (al[d.type] || (aliasNames.has(d.name) && a
+          +liasNames.get(d.name) !== k)) continue;                       
+      848 +                al[d.type] = d.name;                          
+      849 +                aliases.set(k, al);                           
+      850 +                aliasNames.set(d.name, k);                    
+      851 +                continue;                                     
+     … 12 more lines (ctrl+o to expand)
+
+● Now the rendering: choose the name from the opcode, and split the Access:
+  lists between the two equates.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/core.js'; s=open(a).read()…)
+  ⎿  362:    const accessOf = (op) => (op.mode === 'imm' || op.mode === 're
+     l' ? null : READ_OPS.has(op.mn) ? 'read' : WRITE_OPS.has(op.mn) ? 'wri
+     te' : null);
+     … +5 lines (ctrl+o to expand)
+  ⎿  Updated js/core.js (+28 -5)
+      2363      const IND = '    ';
+      2364  
+      2365      function render(model) {
+      2366 -        const { img, opts, S, refs, comments, notes, operands
+           -, consts, enums, enumOps } = model;                          
+      2366 +        const { img, opts, S, refs, comments, notes, operands
+           +, consts, enums, enumOps, aliases } = model;                 
+      2367          const lines = [];
+      2368          const used = new Map();       // base label name -> k
+            ey, for externs
+      2369          const usedConsts = new Map();
+     ...
+      2406              }
+      2407              return m.callers.length || m.access.length ? m : 
+            null;
+      2408          }
+      2409 -        function xrefs(k, which, range) {                    
+      2409 +        // How the instruction at reference key r uses the ad
+           +dress                                                        
+      2410 +        function refUse(r) {                                 
+      2411 +            const T = typeof r === 'number' && S[keySeg(r) - 
+           +1];                                                          
+      2412 +            if (!T) return 'other';                          
+      2413 +            return accessOf(OPS[T.seg.data[keyAddr(r) - T.seg
+           +.start]]) || 'other';                                        
+      2414 +        }                                                    
+      2415 +        // uses (read/write/other) a name stands for, at an a
+           +ddress with                                                  
+      2416 +        // read/write names; null for all                    
+      2417 +        function usesOf(name, k) {                           
+      2418 +            const al = aliases.get(k);                       
+      2419 +            if (!al) return null;                            
+      2420 +            if (name === al.read) return ['read'];           
+      2421 +            if (name === al.write) return ['write'];         
+      2422 +            return ['read', 'write', 'other'].filter((u) => !
+           +al[u]);                                                      
+      2423 +        }                                                    
+      2424 +        function xrefs(k, which, range, uses) {              
+      2425              const r = range ? refsFor(k) : refs.get(k);
+      2426              if (!r) return '';
+      2427              const out = [];
+      2413 -            if (which !== 'callers' && opts.access && r.acces
+           -s.length) {                                                  
+      2414 -                out.push('Access: ' + sortUniq(r.access.map(r
+           -efName)).join(' '));                                         
+      2428 +            const access = uses ? r.access.filter((x) => uses
+           +.includes(refUse(x))) : r.access;                            
+      2429 +            if (which !== 'callers' && opts.access && access.
+           +length) {                                                    
+      2430 +                out.push('Access: ' + sortUniq(access.map(ref
+           +Name)).join(' '));                                           
+      2431              }
+      2432              if (which !== 'access' && opts.callers && r.calle
+            rs.length) {
+      2433                  out.push('Callers: ' + sortUniq(r.callers.map
+            (refName)).join(' '));
+     ...
+      2525              }
+     … 20 more lines (ctrl+o to expand)
+
+● I noticed sym() records the ordinary name before the read/write name
+  substitution happens, meaning a read-only $D20A would still get labeled
+  SKREST. I'll fix this by resolving the read or write name first.
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/core.js'; s=open(a).read()…)
+  ⎿  []
+     POT0 equ $D200                ; Access: 0819
+     RANDOM equ $D20A              ; Access: 0813 l080D
+     … +13 lines (ctrl+o to expand)
+  ⎿  Updated js/core.js (+3 -2)
+      2523                  case 'zp': case 'zpx': case 'zpy': case 'izx'
+            : case 'izy': tgt = lo; val = '$' + h2(lo); break;
+      2524                  default: tgt = lo | (hi << 8); val = '$' + h4
+            (tgt);
+      2525              }
+      2526 -            l = sym(ts, tgt);                                
+      2526              const tk = key(ts, tgt);
+      2528 -            // the address's name for reading (writing) instr
+           -uctions                                                      
+      2527 +            // the address's name for reading (writing) instr
+           +uctions, if it has one                                       
+      2528              const al = opts.labels && aliases.get(tk);
+      2529              const use = al && accessOf(op);
+      2530              if (use && al[use]) {
+      2531                  l = { name: al[use], base: al[use], baseKey: 
+            tk, off: 0 };
+      2532                  if (!used.has(l.base)) used.set(l.base, tk);
+      2533 +            } else {                                         
+      2534 +                l = sym(ts, tgt);                            
+      2535              }
+      2536              const v = l ? ['sym', l.name, tk] : ['num', val, 
+            tk];
+      2537              let ab = xasm && forceAbs(op, hi) ? [['pun', 'a:'
+            ]] : [];
+
+● That matches the intended output: lda/ldx map to RANDOM, sta/inc map to
+  SKREST, lda POT0,x gets the read name, each equate's Access list is scoped to
+  its own uses, and AUDF1 is skipped since $D200 is never written. Now I'll look
+  at the rename code, since go-to and renaming need to account for these second
+  names.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I'll make sure renaming targets the specific name clicked, since RANDOM shares
+  its address with SKREST and could otherwise get renamed by mistake.
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/app.js'; s=open(a).read()…)
+  ⎿  ok
+     711:            case 'name': return rename(arg !== undefined ? arg : c
+     urKey());
+     … +5 lines (ctrl+o to expand)
+  ⎿  Updated js/app.js (+26 -5)
+      975          if (!name) return null;
+      976          if (!X.LABEL_RE.test(name)) return 'Labels must start 
+           with a letter, _ ? or @ and contain only letters, digits, _ ? 
+           @';
+      977          if (MNEMONICS.has(name.toLowerCase())) return `"${name
+           }" is a mnemonic or register name`;
+      978 -        const other = S.model.names.get(name);                
+      978 +        const other = S.model.names.get(name) ?? S.model.alias
+          +Names.get(name);                                              
+      979          if (other !== undefined && other !== k) return `"${nam
+           e}" is already used at ${hexAddr(X.keyAddr(other))}`;
+      980          return null;
+      981      }
+      982  
+      983 -    async function rename(k) {                                
+      983 +    // shown: the name that was clicked, which may be the addr
+          +ess's name for                                                
+      984 +    // reading or writing instructions (hardware registers): r
+          +ename that one                                                
+      985 +    async function rename(k, shown) {                         
+      986          if (k === null || k === undefined) return noAddr();
+      987 +        const al = shown && S.model.aliases.get(k);           
+      988 +        const kind = al && (al.read === shown ? 'read' : al.wr
+          +ite === shown ? 'write' : null);                              
+      989 +        if (kind) return renameAlias(k, kind, shown);         
+      990          const l = S.model.labelAt(k);
+      991          const a = X.keyAddr(k);
+      992          const cur = l && !l.off ? l.name : '';
+     ...
+       999          applyName(k, name.trim());
+      1000      }
+      1001  
+      1002 +    async function renameAlias(k, kind, cur) {               
+      1003 +        const a = X.keyAddr(k);                              
+      1004 +        const sc = scopeSeg(X.keySeg(k), a);                 
+      1005 +        const name = await promptText(`Name for ${hexAddr(a)}
+           + where instructions ${kind} it`, cur, {                      
+      1006 +            placeholder: cur,                                
+      1007 +            help: `Used only by instructions that ${kind} ${h
+           +exAddr(a)}; others use its ordinary name. Leave empty to remo
+           +ve your name (one from a symbol set comes back).`,           
+      1008 +            validate: (v) => validateName(v.trim(), k),      
+      1009 +        });                                                  
+      1010 +        if (name === null) return;                           
+      1011 +        const same = (d) => d.type === kind && d.addr === a &
+           +& (d.seg || 0) === sc;                                       
+      1012 +        commit((p) => {                                      
+      1013 +            p.directives = p.directives.filter((d) => !same(d
+           +));                                                          
+      1014 +            if (name.trim()) p.directives.push({ type: kind, 
+           +name: name.trim(), seg: sc, addr: a, range: 0 });            
+      1015 +        }, name.trim() ? `${name.trim()}: ${hexAddr(a)} where
+           + ${kind}` : `Removed the ${kind} name at ${hexAddr(a)}`);    
+      1016 +    }                                                        
+      1017 +                                                             
+      1018      function applyName(k, name) {
+     … 21 more lines (ctrl+o to expand)
+
+● Still wiring read/write names into the UI: the right-click "Rename …" and the
+  N key on an equate line should also act on the name actually shown.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/app.js'; s=open(a).read()…)
+  ⎿  8:            else if (a === 'rename-sym') rename(symKey, symName);
+  ⎿  Updated js/app.js (+6 -5)
+      708                  commit((p) => { p.directives = E.undefine(p.di
+           rectives, sc, r.lo, r.hi); }, `Undefined ${rangeText(r)}`);
+      709                  return;
+      710              }
+      711 -            case 'name': return rename(arg !== undefined ? arg
+          - : curKey());                                                 
+      711 +            case 'name': return arg !== undefined ? rename(arg
+          +) : rename(curKey(), ln && ln.k === 'equ' ? ln.p[0][1] : undef
+          +ined);                                                        
+      712              case 'comment': return editText('comment', curKey(
+           ));
+      713              case 'note': return editText('note', curKey());
+      714              case 'operand': return editOperand(ln);
+     ...
+      1663      // ------------------------------------------------------
+            ------------
+      1664      // Context menu
+      1665  
+      1666 -    function showMenu(x, y, symKey) {                        
+      1666 +    function showMenu(x, y, symKey, symName) {               
+      1667          const ln = curLine();
+      1668          if (!ln) return;
+      1669          const menu = $('ctx');
+     ...
+      1675          }
+      1676          if (symKey !== undefined) {
+      1677              const tl = S.model.labelAt(symKey);
+      1678 -            const tn = tl ? tl.name : hexAddr(X.keyAddr(symKe
+           -y));                                                         
+      1678 +            const tn = symName || (tl ? tl.name : hexAddr(X.k
+           +eyAddr(symKey)));                                            
+      1679              items.push(mi('follow-sym', `Go to ${tn}`, 'Enter
+            '));
+      1680              items.push(mi('rename-sym', `Rename ${tn}…`, ''))
+            ;
+      1681              items.push('<div class="sep"></div>');
+     ...
+      1712              menu.hidden = true;
+      1713              const a = it.dataset.a;
+      1714              if (a === 'follow-sym') goKey(symKey);
+      1715 -            else if (a === 'rename-sym') rename(symKey);     
+      1715 +            else if (a === 'rename-sym') rename(symKey, symNa
+           +me);                                                         
+      1716              else if (a === 'copy') copySelection();
+      1717              else act(a);
+      1718          };
+     ...
+      2870          $('rows').addEventListener('contextmenu', (e) => {
+      2871              e.preventDefault();
+      2872              const sym = e.target.closest('[data-k]');
+      2873 -            showMenu(e.clientX, e.clientY, sym && !sym.classL
+           -ist.contains('t-lbl') ? +sym.dataset.k : undefined);         
+      2873 +            const onSym = sym && !sym.classList.contains('t-l
+           +bl');                                                        
+      2874 +            showMenu(e.clientX, e.clientY, onSym ? +sym.datas
+           +et.k : undefined, onSym ? sym.textContent : undefined);      
+      2875          });
+      2876          addEventListener('mousedown', (e) => { if (!e.target.
+            closest('#ctx')) $('ctx').hidden = true; });
+     … 1 more lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Next, the inspector's "Operand target" section, which should show the name the
+  instruction actually uses:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/app.js'; s=open(a).read()…)
+  ⎿  ok
+  ⎿  Updated js/app.js (+18 -2)
+      1874          }
+      1875          if (target) {
+      1876              const tl = S.model.labelAt(target[2]);
+      1877 -            h += `<h3>Operand target</h3><div class="xref"><a
+           - data-k="${target[2]}">${esc(tl ? tl.name : hexAddr(X.keyAddr
+           -(target[2])))}</a>                                           
+      1878 -                <span class="dim">${hexAddr(X.keyAddr(target[
+           -2]))}</span></div>`;                                         
+      1877 +            const shown = target[0] === 'sym' ? target[1] : t
+           +l ? tl.name : hexAddr(X.keyAddr(target[2]));                 
+      1878 +            h += `<h3>Operand target</h3><div class="xref"><a
+           + data-k="${target[2]}">${esc(shown)}</a>                     
+      1879 +                <span class="dim">${hexAddr(X.keyAddr(target[
+           +2]))}</span>${aliasNote(target[2], shown)}</div>`;           
+      1880 +        }                                                    
+      1881 +        const own = ln.s && ln.a >= 0 ? X.key(ln.s, ln.a) : n
+           +ull;                                                         
+      1882 +        if (own !== null && S.model.aliases.has(own) && !targ
+           +et) {                                                        
+      1883 +            h += `<h3>Other names</h3><div class="xref">${ali
+           +asNote(own, ln.k === 'equ' ? ln.p[0][1] : null) || '<span cla
+           +ss="dim">none</span>'}</div>`;                               
+      1884          }
+      1885          const dirs = directivesAt(ln.s, a, sub !== null ? 1 :
+             lineBytes(ln));
+      1886          if (dirs.length) {
+     ...
+      1923          });
+      1924      }
+      1925  
+      1926 +    // The other names of an address with read/write names (h
+           +ardware                                                      
+      1927 +    // registers), besides `shown`                           
+      1928 +    function aliasNote(k, shown) {                           
+      1929 +        const al = S.model.aliases.get(k);                   
+      1930 +        if (!al) return '';                                  
+      1931 +        const l = S.model.labelAt(k);                        
+      1932 +        const all = [[l && !l.off ? l.name : null, 'otherwise
+           +'], [al.read, 'where read'], [al.write, 'where written']];   
+      1933 +        const rest = all.filter(([n]) => n && n !== shown);  
+      1934 +        return rest.length ? `<div class="dim">${rest.map(([n
+           +, w]) => `${esc(n)} ${w}`).join(' · ')}</div>` : '';         
+      1935 +    }                                                        
+      1936 +                                                             
+      1937      function overviewHtml() {
+      1938          const m = S.model;
+      1939          let code = 0, total = 0;
+
+● Last, the data: in hardware.dop I'll turn the 36 commented-out read names into
+  ;xdis read lines. The file is maintained by hand (it came from dis), so I'll
+  edit it directly:
+
+● Bash(python3 - <<'EOF'
+      import re…)
+  ⎿  19 converted
+     36:;xdis read M0PF=d000
+     37:;xdis read M2PF=d002
+     … +4 lines (ctrl+o to expand)
+  ⎿  Updated js/symbols.js (+1 -1)
+      52    "bbcmosbuf.dop": "; BBC Micro MOS buffers and workspace ($038
+          0-$0E00): cassette filing system,\n; keyboard buffer, Tube serv
+          ice points, sound, buffers, soft keys and\n; characters, NMI ar
+          ea. Programs often reuse this memory, so enable this set\n; onl
+          y for code that really uses the MOS there.\n; Generated by tool
+          s/harvest-bbc.py; names from the MOS 1.20 reassembly by\n; Toby
+           Nelson (tobylobster.github.io/mos).\n\n;       CASSETTE FILING
+           SYSTEM WORKSPACE ($0380-$03DF)\n\ndata tapeBlockHeaderStart=$3
+          80              \ndata tapeBlockLoadAddressLow=$38C           \
+          ndata tapeBlockLoadAddressMid1=$38D          \ndata tapeBlockLo
+          adAddressMid2=$38E          \ndata tapeBlockLoadAddressHigh=$38
+          F          \ndata tapeBlockExecutableAddressLow=$390     \ndata
+           tapeBlockExecutableAddressMid1=$391    \ndata tapeBlockExecuta
+          bleAddressMid2=$392    \ndata tapeBlockExecutableAddressHigh=$3
+          93    \ndata tapeBlockNumberLow=$394                \ndata tape
+          BlockNumberHigh=$395               \ndata tapeBlockLengthLow=$3
+          96                \ndata tapeBlockLengthHigh=$397              
+           \ndata tapeBlockFlagByte=$398                 \ndata tapeBlock
+          SpareByteA=$399               \ndata tapeBlockSpareByteB=$39A  
+                       \ndata tapeBlockSpareByteC=$39B               \nda
+          ta tapeBlockSpareByteD=$39C               \ndata bputBufferOffs
+          et=$39D                  \ndata bgetBufferOffset=$39E          
+                  \ndata bgetFilename=$3A7                      \ndata fs
+          Filename=$3B2                        \ndata fsLoadAddressLow=$3
+          BE                  \ndata fsLoadAddressMid1=$3BF              
+             \ndata fsLoadAddressMid2=$3C0                 \ndata fsLoadA
+          ddressHigh=$3C1                 \ndata fsExecutionAddressLow=$3
+          C2             \ndata fsExecutionAddressMid1=$3C3            \n
+          data fsExecutionAddressMid2=$3C4            \ndata fsExecutionA
+          ddressHigh=$3C5            \ndata fsBlockNumberLow=$3C6        
+                    \ndata fsBlockNumberHigh=$3C7                 \ndata 
+          fsBlockLengthLow=$3C8                  \ndata f … [+4695 chars]
+      53    "cia.dop": "; C64 CIA registers\ndata CIAPRA=$DC00\ndata CIAP
+          RB=$DC01\ndata CIADDRA=$DC02\ndata CIADDRB=$DC03\ndata CIATALO=
+          $DC04\ndata CIATAHI=$DC05\ndata CIATBLO=$DC06\ndata CIATBHI=$DC
+          07\ndata CIATEN=$DC08\ndata CIASEC=$DC09\ndata CIAMIN=$DC0A\nda
+          ta CIAHOUR=$DC0B\ndata CIASDR=$DC0C\ndata CIAICR=$DC0D\ndata CI
+          ACRA=$DC0E\ndata CIACRB=$DC0F\ndata CIA=$DC10+EF\ndata CIA2PRA=
+          $DD00\ndata CIA2PRB=$DD01\ndata CIA2DDRA=$DD02\ndata CIA2DDRB=$
+          DD03\ndata CIA2TALO=$DD04\ndata CIA2TAHI=$DD05\ndata CIA2TBLO=$
+          DD06\ndata CIA2TBHI=$DD07\ndata CIA2TEN=$DD08\ndata CIA2SEC=$DD
+          09\ndata CIA2MIN=$DD0A\ndata CIA2HOUR=$DD0B\ndata CIA2SDR=$DD0C
+          \ndata CIA2ICR=$DD0D\ndata CIA2CRA=$DD0E\ndata CIA2CRB=$DD0F\nd
+          ata CIA2=$DD10+EF\n",
+      54    "dos.dop": "; DOS and SpartaDOS X\n; Generated by tools/harve
+          st-cc65.py from cc65 asminc/atari.inc\n; (Freddy Offenga, Chris
+          tian Groessler, Christian Krueger; zlib license)\n\ndata DOS=$7
+          00                       \ndata SDX_VERSION=$701               
+          ;SD VERSION (E.G. $32 = 3.2, $40 = 4.0)\ncode SDX_KERNEL=$703  
+                        ;SDX KERNEL ENTRY POINT\ncode SDX_BLOCK_IO=$706  
+                      ;BLOCK I/O ENTRY POINT\ncode SDX_MISC=$709         
+                   ;\"MISC\" ENTRY POINT\ndata SDX_DEVICE=$761           
+               \ndata SDX_DATE=$77B                  ;DAY, MONTH, YEAR (3
+           BYTES)\ndata SDX_TIME=$77E                  ;HOUR, MIN, SEC (3
+           BYTES)\ndata SDX_DATESET=$781               \ndata SDX_PATH=$7
+          A0                  ;64 BYTES\ndata SDX_IFSYMBOL=$7EB          
+              ;ONLY VALID ON SDX 4.40 OR NEWER\n",
+      55 -  "hardware.dop": "; GTIA Write\ndata HPOSP0=d000\ndata HPOSP1=
+         -d001\ndata HPOSP2=d002\ndata HPOSP3=d003\ndata HPOSM0=d004\ndat
+         -a HPOSM1=d005\ndata HPOSM2=d006\ndata HPOSM3=d007\ndata SIZEP0=
+         -d008\ndata SIZEP1=d009\ndata SIZEP2=d00a\ndata SIZEP3=d00b\ndat
+         -a SIZEM=d00c\ndata GRAFP0=d00d\ndata GRAFP1=d00e\ndata GRAFP2=d
+         -00f\ndata GRAFP3=d010\ndata GRAFM=d011\ndata COLPM0=d012\ndata 
+         -COLPM1=d013\ndata COLPM2=d014\ndata COLPM3=d015\ndata COLPF0=d0
+         -16\ndata COLPF1=d017\ndata COLPF2=d018\ndata COLPF3=d019\ndata 
+         -COLBK=d01a\ndata PRIOR=d01b\ndata VDELAY=d01c\ndata GRACTL=d01d
+         -\ndata HITCLR=d01e\ndata CONSOL=d01f\n\n; GTIA Read\n;data M0PF
+         -=d000\n;data M1PF=d001\n;data M2PF=d002\n;data M3PF=d003\n;data
+         - P0PF=d004\n;data P1PF=d005\n;data P2PF=d006\n;data P3PF=d007\n
+         -;data M0PL=d008\n;data M1PL=d009\n;data M2PL=d00a\n;data M3PL=d
+         -00b\n;data P0PL=d00c\n;data P1PL=d00d\n;data P2PL=d00e\n;data P
+         -3PL=d00f\n;data TRIG0=d010\n;data TRIG1=d011\n;data TRIG2=d012\
+         -n;data TRIG3=d013\n;data PAL=d014\n\n; POKEY Write\ndata AUDF1=
+         -d200\ndata AUDC1=d201\ndata AUDF2=d202\ndata AUDC2=d203\ndata A
+         -UDF3=d204\ndata AUDC3=d205\ndata AUDF4=d206\ndata AUDC4=d207\nd
+         -ata AUDCTL=d208\ndata STIMER=d209\ndata SKREST=d20a\ndata POTGO
+         -=d20b\ndata SEROUT=d20d\ndata IRQEN=d20e\ndata SKCTL=d20f\n\nda
+         -ta P2AUDF1=d210\ndata P2AUDC1=d211\ndata P2AUDF2=d212\ndata P2A
+         -UDC2=d213\ndata P2AUDF3=d214\ndata P2AUDC3=d215\ndata P2AUDF4=d
+         -216\ndata P2AUDC4=d217\ndata P2AUDCTL=d218\ndata P2STIMER=d219\
+         -ndata P2SKREST=d21a\ndata P2POTGO=d21b\ndata P2SEROUT=d21d\ndat
+         -a P2IRQEN=d21e\ndata P2SKCTL=d21f\n\n; POKEY Read\n;data POT0=d
+         -200\n;data POT1=d201\n;data POT2=d202\n;data POT3=d203\n;data P
+         -OT4=d204\n;data POT5=d205\n;data POT6=d206\n;data POT7=d207\n;d
+         -ata ALLPOT=d208\n;data KBCODE=d209\n;data RANDOM=d20a\n;data SE
+         -RIN=d20d\n;data IRQST=d20e\n;data SKSTAT=d20f\n\n; PIA\ndata PO
+         -RTA=d300\ndata PORTB=d301\ndata PACTL=d302\ndata PBCTL=d303\n\n
+         -; ANTIC\ndata DMACTL=d400\ndata CHACTL=d401\ndata DLISTL=d402\n
+         -data DLISTH=d403\ndata HSCROL=d404\ndata VSCROL … [+315 chars] 
+      55 +  "hardware.dop": "; GTIA Write\ndata HPOSP0=d000\ndata HPOSP1=
+         +d001\ndata HPOSP2=d002\ndata HPOSP3=d003\ndata HPOSM0=d004\ndat
+         +a HPOSM1=d005\ndata HPOSM2=d006\ndata HPOSM3=d007\ndata SIZEP0=
+         +d008\ndata SIZEP1=d009\ndata SIZEP2=d00a\ndata SIZEP3=d00b\ndat
+         +a SIZEM=d00c\ndata GRAFP0=d00d\ndata GRAFP1=d00e\ndata GRAFP2=d
+         +00f\ndata GRAFP3=d010\ndata GRAFM=d011\ndata COLPM0=d012\ndata 
+         +COLPM1=d013\ndata COLPM2=d014\ndata COLPM3=d015\ndata COLPF0=d0
+         +16\ndata COLPF1=d017\ndata COLPF2=d018\ndata COLPF3=d019\ndata 
+         +COLBK=d01a\ndata PRIOR=d01b\ndata VDELAY=d01c\ndata GRACTL=d01d
+         +\ndata HITCLR=d01e\ndata CONSOL=d01f\n\n; GTIA Read (names used
+         + where instructions read these addresses)\n;xdis read M0PF=d000
+         +\n;xdis read M2PF=d002\n;xdis read P0PF=d004\n;xdis read P2PF=d
+         +006\n;xdis read M0PL=d008\n;xdis read M2PL=d00a\n;xdis read P0P
+         +L=d00c\n;xdis read P2PL=d00e\n;xdis read TRIG0=d010\n;xdis read
+         + TRIG2=d012\n;xdis read PAL=d014\ndata AUDF1=d200\ndata AUDC1=d
+         +201\ndata AUDF2=d202\ndata AUDC2=d203\ndata AUDF3=d204\ndata AU
+         +DC3=d205\ndata AUDF4=d206\ndata AUDC4=d207\ndata AUDCTL=d208\nd
+         +ata STIMER=d209\ndata SKREST=d20a\ndata POTGO=d20b\ndata SEROUT
+         +=d20d\ndata IRQEN=d20e\ndata SKCTL=d20f\n\ndata P2AUDF1=d210\nd
+         +ata P2AUDC1=d211\ndata P2AUDF2=d212\ndata P2AUDC2=d213\ndata P2
+         +AUDF3=d214\ndata P2AUDC3=d215\ndata P2AUDF4=d216\ndata P2AUDC4=
+         +d217\ndata P2AUDCTL=d218\ndata P2STIMER=d219\ndata P2SKREST=d21
+         +a\ndata P2POTGO=d21b\ndata P2SEROUT=d21d\ndata P2IRQEN=d21e\nda
+         +ta P2SKCTL=d21f\n\n; POKEY Read (names used where instructions 
+         +read these addresses)\n;xdis read POT0=d200\n;xdis read POT2=d2
+         +02\n;xdis read POT4=d204\n;xdis read POT6=d206\n;xdis read ALLP
+         +OT=d208\n;xdis read RANDOM=d20a\n;xdis read IRQST=d20e\n\n; PIA
+         +\ndata PORTA=d300\ndata PORTB=d301\ndata PACTL=d302\ndata PBCTL
+         +=d303\n\n; ANTIC\ndata DMACTL=d400\ndata CHACTL=d401\ndata DLIS
+         +TL=d402\ndata DLISTH=d403\ndata HSCROL=d404\ndata VSCROL=d405\n
+         +data PMBASE=d407\ndata CHBASE=d409\ndata WSYNC=d40a\ndata VCOUN
+         +T=d40b ; Read\ndata PENH=d40c ; Read\ndata PENV … [+196 chars] 
+      56    "sid.dop": "; C64 SID registers\ndata SIDFREQLO1=$D400\ndata 
+          SIDFREQHI1=$D401\ndata SIDDURLO1=$D402\ndata SIDDURHI1=$D403\nd
+          ata SIDWAVE1=$D404\ndata SIDATTACK1=$D405\ndata SIDSUST1=$D406\
+          ndata SIDFREQLO2=$D407\ndata SIDFREQHI2=$D408\ndata SIDDURLO2=$
+          D409\ndata SIDDURHI2=$D40A\ndata SIDWAVE2=$D40B\ndata SIDATTACK
+          2=$D40C\ndata SIDSUST2=$D40D\ndata SIDFREQLO3=$D40E\ndata SIDFR
+          EQHI3=$D40F\ndata SIDDURLO3=$D410\ndata SIDDURHI3=$D411\ndata S
+          IDWAVE3=$D412\ndata SIDATTACK3=$D413\ndata SIDSUST3=$D414\ndata
+           SIDCUTLO=$D415\ndata SIDCUTHI=$D416\ndata SIDRESON=$D417\ndata
+           SIDVOLUM=$D418\ndata SIDPADX=$D419\ndata SIDPADY=$D41A\ndata S
+          IDOSCIL=$D41B\ndata SIDENVEL=$D41C\ndata SID=$D41D+E2\n",
+      57    "sys.dop": ";<HESS.ATARI>SYSMAC.SML.27  8-Mar-82 08:39:38, Ed
+          it by HESS\n\n;6502 SYSTEM -*-MACRO-*- DEFINITIONS\n\n; ***** A
+          TARI SYSTEM DEFS *****\n\n;       VECTOR TABLE\n\nvector EDITRV
+          =$E400                  ;EDITOR\nvector SCRENV=$E410           
+                 ;TELEVISION SCREEN\nvector KEYBDV=$E420                 
+           ;KEYBOARD\nvector PRINTV=$E430                  ;PRINTER\nvect
+          or CASETV=$E440                  ;CASSETTE\n\n;       JUMP VECT
+          OR TABLE\n\ncode DISKIV=$E450                  ;DISK INITIALIZA
+          TION\ncode DSKINV=$E453                  ;DISK INTERFACE\ncode 
+          CIOV=$E456                  ;CIO ROUTINE\ncode SIOV=$E459      
+                      ;SIO ROUTINE\ncode SETVBV=$E45C                  ;S
+          ET VERTICAL BLANK VECTORS\ncode SYSVBV=$E45F                  ;
+          SYSTEM VERTICAL BLANK ROUTINE\ncode XITVBV=$E462               
+             ;EXIT VERTICAL BLANK ROUTINE\ncode SIOINV=$E465             
+               ;SIO INIT\ncode SENDEV=$E468                  ;SEND ENABLE
+           ROUTINE\ncode INTINV=$E46B                  ;INTERRUPT HANDLER
+           INIT\ncode CIOINV=$E46E                  ;CIO INIT\ncode BLKBD
+          V=$E471                  ;BLACKBOARD MODE\ncode WARMSV=$E474   
+                         ;WARM START ENTRY POINT\ncode COLDSV=$E477      
+                      ;COLD START ENTRY POINT\ncode RBLOKV=$E47A         
+                   ;CASSETTE READ BLOCK VECTOR\ncode CSOPIV=$E47D        
+                    ;CASSETTE OPEN VECTOR\ncode DSOPIV=$E480             
+               ;CASSETTE OPEN FOR INPUT VECTOR\n\n;       SOME USEFUL INT
+          ERNAL ROUTINES\n\ncode KGETCH=$F6E2                  ;GET CHAR 
+          FROM KEYBOARD\ncode EOUTCH=$F6A4                  ;OUTPUT CHAR 
+          TO SCREEN\ncode PUTLIN=$F385                  ;OUTPUT LINE TO I
+          OCB#0\n\n;       COMMAND CODES FOR IOCB\n\n;constant OPEN=$03  
+                            ;OPEN FOR INPUT/OUTPUT\n;constant GETREC=$05 
+                             ;GET RECORD (TEXT)\n;constant GETCHR=$07    
+                          ;GET CHARACTER(S)\n;constant PUTREC=$09        
+                      ;PUT RECORD (TEXT)\n;constant PUTCHR=$0B           
+                   ;PUT CHARACTER(S)\n;constant CLOSE=$0C … [+18557 chars
+          ]
+      58    "vic.dop": "; C64 VIC-II registers\ndata VICM0X=$D000 ; X coo
+          rdinate sprite 0\ndata VICM0Y=$D001 ; Y coordinate sprite 0\nda
+          ta VICM1X=$D002 ; X coordinate sprite 1\ndata VICM1Y=$D003 ; Y 
+          coordinate sprite 1\ndata VICM2X=$D004 ; X coordinate sprite 2\
+          ndata VICM2Y=$D005 ; Y coordinate sprite 2\ndata VICM3X=$D006 ;
+           X coordinate sprite 3\ndata VICM3Y=$D007 ; Y coordinate sprite
+           3\ndata VICM4X=$D008 ; X coordinate sprite 4\ndata VICM4Y=$D00
+          9 ; Y coordinate sprite 4\ndata VICM5X=$D00A ; X coordinate spr
+          ite 5\ndata VICM5Y=$D00B ; Y coordinate sprite 5\ndata VICM6X=$
+          D00C ; X coordinate sprite 6\ndata VICM6Y=$D00D ; Y coordinate 
+          sprite 6\ndata VICM7X=$D00E ; X coordinate sprite 7\ndata VICM7
+          Y=$D00F ; Y coordinate sprite 7\ndata VICMNX8=$D010 ; MSBs of X
+           coordinates\ndata VICCTL1=$D011 ; Control register 1\ndata VIC
+          RASTER=$D012 ; Raster counter\ndata VICLPX=$D013 ; Light pen X\
+          ndata VICLPY=$D014 ; Light pen Y\ndata VICMNE=$D015 ; Sprite en
+          abled\ndata VICCTL2=$D016 ; Control register 2\ndata VICMNYE=$D
+          017 ; Sprite Y expansion\ndata VICMEMPTR=$D018 ; Memory pointer
+          s\ndata VICINTREG=$D019 ; Interrupt register\ndata VICINTEN=$D0
+          1A ; Interrupt enabled\ndata VICMNDP=$D01B ; Sprite data priori
+          ty\ndata VICMNMC=$D01C ; Sprite multicolor\ndata VICMNXE=$D01D 
+          ; Sprite X expansion\ndata VICMNM=$D01E ; Sprite-sprite collisi
+          on\ndata VICMND=$D01F ; Sprint-data collision\ndata VICEC=$D020
+           ; Border color\ndata VICB0C=$D021 ; Background color 0\ndata V
+          ICB1C=$D022 ; Background color 1\ndata VICB2C=$D023 ; Backgroun
+          d color 2\ndata VICB3C=$D024 ; Background color 3\ndata VICMM0=
+          $D025 ; Sprite multicolor 0\ndata VICMM1=$D026 ; Sprite multico
+          lor 1\ndata VICM0C=$D027 ; Sprite color 0\ndata VICM1C=$D028 ; 
+          Sprite color 1\ndata VICM2C=$D029 ; Sprite color 2\ndata VICM3C
+          =$D02A ; Sprite color 3\ndata VICM4C=$D02B ; Sprite color 4\nda
+          ta VICM5C=$D02C ; Sprite color 5\ndata VICM6C=$D02D ; Sprite co
+          lor 6\ndata VICM7C=$D02E ; Sprite color 7\ndata VICCOL=$D800+3F
+          F ; Color ram\n"
+  ⎿  Updated symbols/hardware.dop (+21 -40)
+      32  data HITCLR=d01e
+      33  data CONSOL=d01f
+      34  
+      35 -; GTIA Read                                                    
+      36 -;data M0PF=d000                                                
+      37 -;data M1PF=d001                                                
+      38 -;data M2PF=d002                                                
+      39 -;data M3PF=d003                                                
+      40 -;data P0PF=d004                                                
+      41 -;data P1PF=d005                                                
+      42 -;data P2PF=d006                                                
+      43 -;data P3PF=d007                                                
+      44 -;data M0PL=d008                                                
+      45 -;data M1PL=d009                                                
+      46 -;data M2PL=d00a                                                
+      47 -;data M3PL=d00b                                                
+      48 -;data P0PL=d00c                                                
+      49 -;data P1PL=d00d                                                
+      50 -;data P2PL=d00e                                                
+      51 -;data P3PL=d00f                                                
+      52 -;data TRIG0=d010                                               
+      53 -;data TRIG1=d011                                               
+      54 -;data TRIG2=d012                                               
+      55 -;data TRIG3=d013                                               
+      56 -;data PAL=d014                                                 
+      57 -                                                               
+      58 -; POKEY Write                                                  
+      35 +; GTIA Read (names used where instructions read these addresses
+         +)                                                              
+      36 +;xdis read M0PF=d000                                           
+      37 +;xdis read M2PF=d002                                           
+      38 +;xdis read P0PF=d004                                           
+      39 +;xdis read P2PF=d006                                           
+      40 +;xdis read M0PL=d008                                           
+      41 +;xdis read M2PL=d00a                                           
+      42 +;xdis read P0PL=d00c                                           
+      43 +;xdis read P2PL=d00e                                           
+      44 +;xdis read TRIG0=d010                                          
+      45 +;xdis read TRIG2=d012                                          
+      46 +;xdis read PAL=d014                                            
+      47  data AUDF1=d200
+     … 39 more lines (ctrl+o to expand)
+
+● Only 19 of the 36 lines converted, so some must be formatted differently. Here
+  are the rest:
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● My regex mistakenly matched newlines too, causing it to swallow following
+  lines and delete names, blank lines, and the "POKEY Write" heading. I'll
+  restore the file from git and reapply the fix using a regex that only matches
+  spaces and tabs.
+
+● Bash(git checkout symbols/hardware.dop && python3 - <<'EOF'
+      import re…)
+  ⎿  Updated 1 path from the index
+     36 converted
+      symbols/hardware.dop | 76 ++++++++++++++++++++++++++-----------------
+     … +8 lines (ctrl+o to expand)
+  ⎿  Updated js/symbols.js (+1 -1)
+  ⎿  Updated symbols/hardware.dop (+19 -0)
+  ⎿  (a git step in this command can move the working tree, so these may be
+     its changes, not edits) (ctrl+o to expand)
+
+● All 36 converted, one line each, and only the two section headings changed
+  otherwise. Now the round-trip suite, where many Atari cases load hardware.dop
+  and must still reassemble identically:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 96 pass. The real programs now read KBCODE, RANDOM and SKSTAT, each equate
+  listing only its reads. Next, explicit round-trip cases, also built with
+  MADS:
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/test/roundtrip.js'; s=open(a).read()…)
+  ⎿  99
+     PASS read-names (14 lines, 1 ms): xasm: identical; absent "AUDF1": abs
+     ent; expect "lda RANDOM": found; expect "sta SKRES
+     … +4 lines (ctrl+o to expand)
+  ⎿  Updated test/roundtrip.js (+16 -0)
+      309              0x4C, 0x00, 0xC0,                                 
+                                // jmp $C000
+      310              0xA9, 0x01, 0x8D, 0x20, 0xD0, 0xA2, 0x05, 0xCA, 0x
+           D0, 0xFD, 0x60]),   // runs at $C000
+      311          expect: ['org r:$C000', 'jmp lC000', 'dex'], absentPro
+           blems: [/Possible code/] },
+      312 +    // read names: instructions that read $D20A call it RANDOM
+          +, those that                                                  
+      313 +    // write it (including read-modify-write) SKREST; each equ
+          +ate lists its uses                                            
+      314 +    ...(() => {                                               
+      315 +        const bytes = Uint8Array.from([0x01, 0x08, 0x0B, 0x08,
+          + 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,           
+      316 +            0xAD, 0x0A, 0xD2, 0x8D, 0x0A, 0xD2, 0xAE, 0x0A, 0x
+          +D2,     // lda $D20A / sta $D20A / ldx $D20A                  
+      317 +            0xEE, 0x0A, 0xD2, 0xBD, 0x00, 0xD2, 0x60]);       
+          +        // inc $D20A / lda $D200,x / rts                      
+      318 +        const expect = ['lda RANDOM', 'sta SKREST', 'ldx RANDO
+          +M', 'inc SKREST', 'lda POT0,x',                               
+      319 +            'RANDOM equ $D20A              ; Access: 0813 l080
+          +D', 'SKREST equ $D20A              ; Access: 0810 0816'];     
+      320 +        return [                                              
+      321 +            { name: 'read-names', type: 'prg', bytes, include:
+          + ['symbols/hardware.dop'], expect, absent: ['AUDF1'] },       
+      322 +            { name: 'read-names-mads', type: 'prg', bytes, inc
+          +lude: ['symbols/hardware.dop'], expect,                       
+      323 +                options: { syntax: 'mads' }, mads: true },    
+      324 +            { name: 'read-names-project', type: 'prg', bytes, 
+          +include: ['symbols/hardware.dop'], directives: ['read NOISE=$D
+          +20A'],                                                        
+      325 +                expect: ['lda NOISE', 'sta SKREST'], absent: [
+          +'RANDOM'] },                                                  
+      326 +        ];                                                    
+      327 +    })(),                                                     
+      328      { name: 'car-abasic-tables', file: '/mnt/c/Users/USER/Dow
+           nloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/
+           hardware.dop'],
+      329        pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-
+           1]'] },
+      330      // project files; `relocate` applies the relocations xdis 
+           suggests
+  ⎿  (timeout 10m)
+
+● All 99 tests pass, confirming a project's read directive overrides the symbol
+  set's. Next I'll run a UI test: renaming a read name from its equate line and
+  verifying the inspector shows the other names.
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/test/ui-test.html'; s=open(a).read()…)
+  ⎿  181 pass
+     <span class="skip">SKIP</span> no read name used
+         // 7c. read names (hardware.dop): renaming one from its equate lea
+     … +5 lines (ctrl+o to expand)
+  ⎿  Updated test/ui-test.html (+28 -0)
+      160          check('undo removes the enum', !S.model.enums.has('tes
+           tenum'));
+      161      }
+      162  
+      163 +    // 7c. read names (hardware.dop): renaming one from its eq
+          +uate leaves the                                               
+      164 +    // ordinary name alone; the inspector lists the others    
+      165 +    {                                                         
+      166 +        const ai = S.listing.lines.findIndex((l) => l.k === 'e
+          +qu' && S.model.aliasNames.has(l.p[0][1]));                    
+      167 +        if (ai < 0) {                                         
+      168 +            log('skip', 'no read name used');                 
+      169 +        } else {                                              
+      170 +            const readName = S.listing.lines[ai].p[0][1], rk =
+          + S.model.aliasNames.get(readName);                            
+      171 +            const plain = S.model.labelAt(rk);                
+      172 +            cursorTo(ai);                                     
+      173 +            key('n');                                         
+      174 +            await answer('MYREAD');                           
+      175 +            check('renaming a read name adds a read directive'
+          +, S.project.directives.some((d) => d.type === 'read' && d.name
+          + === 'MYREAD'));                                              
+      176 +            check('reads use the new name, the ordinary name s
+          +tays', /\bMYREAD\b/.test(asm()) && !new RegExp(`\\b${readName}
+          +\\b`).test(asm()) &&                                          
+      177 +                (!plain || S.model.labelAt(rk).name === plain.
+          +name));                                                       
+      178 +            const ri = S.listing.lines.findIndex((l) => l.k ==
+          += 'ins' && l.p.some((p) => p[1] === 'MYREAD'));               
+      179 +            cursorTo(ri);                                     
+      180 +            key('ArrowDown');                                 
+      181 +            key('ArrowUp');                                   
+      182 +            doc.querySelector('[data-tab=inspect]').click();  
+      183 +            await sleep(80);                                  
+      184 +            check('the inspector shows the operand under its r
+          +ead name', /MYREAD/.test(doc.getElementById('tab-inspect').tex
+          +tContent) &&                                                  
+      185 +                (!plain || new RegExp(`${plain.name} otherwise
+          +`).test(doc.getElementById('tab-inspect').textContent)));     
+      186 +            key('z', { ctrlKey: true });                      
+      187 +            check('undo restores the read name', new RegExp(`\
+          +\b${readName}\\b`).test(asm()));                              
+      188 +        }                                                     
+      189 +    }                                                         
+      190 +                                                              
+      191      // 8. pointer table over two data bytes
+      192      const d2 = S.listing.lines.findIndex((l) => l.k === 'data'
+            && l.n >= 2 && l.p[1] && l.p[1][1] === 'dta ');
+      193      if (d2 >= 0) {
+  ⎿  (timeout 10m)
+
+● The test skipped since the UI binary doesn't hit any hardware read registers.
+  I'll set up a read name via the Directives panel on an address the program
+  actually reads, then rerun the checks.
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/test/ui-test.html'; s=open(a).read()…)
+  ⎿  185 pass
+     <span class="pass">PASS</span> renaming a read name adds a read direct
+     ive
+     … +9 lines (ctrl+o to expand)
+  ⎿  Updated test/ui-test.html (+15 -1)
+      163      // 7c. read names (hardware.dop): renaming one from its eq
+           uate leaves the
+      164      // ordinary name alone; the inspector lists the others
+      165      {
+      166 -        const ai = S.listing.lines.findIndex((l) => l.k === 'e
+          -qu' && S.model.aliasNames.has(l.p[0][1]));                    
+      166 +        let ai = S.listing.lines.findIndex((l) => l.k === 'equ
+          +' && S.model.aliasNames.has(l.p[0][1]));                      
+      167 +        if (ai < 0) {                                         
+      168 +            // give an address the program reads (and has an e
+          +quate for) a read name                                        
+      169 +            const eq = S.listing.lines.find((l) => l.k === 'eq
+          +u' && l.def !== undefined && S.listing.lines.some((m) => m.k =
+          +== 'ins' &&                                                   
+      170 +                /^(lda|ldx|ldy|cmp|and|ora|bit)$/.test(m.p[1] 
+          +&& m.p[1][1]) && m.p.some((p) => p[2] === l.def)));           
+      171 +            if (eq) {                                         
+      172 +                const loc = (S.img.multi && S.model.cover[X.ke
+          +yAddr(eq.def)] > 1 ? X.keySeg(eq.def) + ':' : '') + '$' + X.h4
+          +(X.keyAddr(eq.def));                                          
+      173 +                const inp = doc.getElementById('dir-add');    
+      174 +                inp.value = `read TESTREAD=${loc}`;           
+      175 +                inp.dispatchEvent(new w.KeyboardEvent('keydown
+          +', { key: 'Enter', bubbles: true }));                         
+      176 +                await sleep(30);                              
+      177 +                ai = S.listing.lines.findIndex((l) => l.k === 
+          +'equ' && l.p[0][1] === 'TESTREAD');                           
+      178 +            }                                                 
+      179 +        }                                                     
+      180          if (ai < 0) {
+      181              log('skip', 'no read name used');
+      182          } else {
+     ...
+      198                  (!plain || new RegExp(`${plain.name} otherwise
+           `).test(doc.getElementById('tab-inspect').textContent)));
+      199              key('z', { ctrlKey: true });
+      200              check('undo restores the read name', new RegExp(`\
+           \b${readName}\\b`).test(asm()));
+      201 +            if (readName === 'TESTREAD') key('z', { ctrlKey: t
+          +rue });                                                       
+      202          }
+      203      }
+      204  
+  ⎿  (timeout 10m)
+
+● All 185 UI checks pass in 2 out of 2 runs, including the four new ones. Last,
+  the README:
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/README.md'; s=open(a).read()…)
+  ⎿   M README.md
+      M js/app.js
+      M js/core.js
+     … +17 lines (ctrl+o to expand)
+  ⎿  Updated README.md (+16 -0)
+       96  the program's own code. The list is saved in the project and i
+           n exported
+       97  `.dop` files as a `;xdis off` line.
+       98  
+       99 +Hardware registers often mean different things when read and w
+          +ritten:                                                       
+      100 +`$D20A` is `SKREST` when written but `RANDOM` when read. A `re
+          +ad` directive                                                 
+      101 +gives an address a second name used only by instructions that 
+          +read it (`lda`,                                               
+      102 +`ldx`, `ldy`, `cmp`, `cpx`, `cpy`, `bit`, `adc`, `sbc`, `and`,
+          + `ora`, `eor`):                                               
+      103 +                                                              
+      104 +    data SKREST=d20a                                          
+      105 +    ;xdis read RANDOM=d20a                                    
+      106 +                                                              
+      107 +`lda $D20A` then reads `lda RANDOM`, while `sta` and read-modi
+          +fy-write                                                      
+      108 +instructions such as `inc` use `SKREST`. Both get an `equ`, ea
+          +ch listing only                                               
+      109 +its own accesses. A `write` directive works the same way for w
+          +rites.                                                        
+      110 +`hardware.dop` has read names for the GTIA collision and trigg
+          +er registers,                                                 
+      111 +POKEY's `POT0`–`ALLPOT`, `KBCODE`, `RANDOM`, `SERIN`, `IRQST` 
+          +and `SKSTAT`,                                                 
+      112 +and ANTIC's `NMIST`. Renaming one (`N` on its `equ`, or *Renam
+          +e* on it in an                                                
+      113 +operand) changes only that name.                              
+      114 +                                                              
+      115  A set can name labels that start switched off with a `;xdis de
+           faultoff NAME…`
+      116  line. They show unticked in the viewer and are left out until 
+           switched on. In
+      117  the BBC Micro sets these are `NMIVEC` (only used with Econet o
+           r a hard disc)
+
+● Addresses can now have separate names for reading and writing, chosen per
+  instruction from its opcode. Nothing is committed yet.
+
+  Directives (;xdis lines, so the dis CLI ignores them):
+  data SKREST=d20a
+  ;xdis read RANDOM=d20a
+  - read NAME=$ADDR is a second name used only by instructions that read the
+    address: lda, ldx, ldy, cmp, cpx, cpy, bit, adc, sbc, and, ora, eor, and
+    undocumented reads like lax.
+  - write NAME=$ADDR works the same way for writes: sta, stx, sty,
+    read-modify-write like inc, and undocumented writes.
+  - The ordinary name covers everything else: jump targets, dta a(...), #</#>,
+    and any reads or writes without their own name.
+  - These names only change how an address is shown, so tracing is unaffected.
+
+  Output, from a test program:
+  RANDOM equ $D20A              ; Access: 0813 l080D
+  SKREST equ $D20A              ; Access: 0810 0816
+  ...
+      lda RANDOM
+      sta SKREST
+      ldx RANDOM
+      inc SKREST                ; read-modify-write counts as a write
+      lda POT0,x
+  Each equate's Access: list covers only its own reads or writes. A name that's
+  never used gets no equate.
+
+  hardware.dop: the 36 read names dis had to comment out are now ;xdis read
+  lines. They cover:
+  - GTIA: the collision registers M0PF…P3PL, TRIG0–TRIG3 and PAL;
+  - POKEY: POT0–POT7, ALLPOT, KBCODE, RANDOM, SERIN, IRQST and SKSTAT;
+  - ANTIC: NMIST.
+
+  Each is a one-line change. The test programs now show lda KBCODE, lda RANDOM
+  and lda SKSTAT where they used to show the write names.
+
+  UI:
+  - Renaming a read or write name (N on its equate, double-clicking it, or
+    Rename on it in an operand) changes only that name. It does this by adding
+    your own read/write directive, which overrides the symbol set's. Clearing
+    the name removes your override.
+  - The inspector's "Operand target" shows the name the instruction actually
+    uses, plus the address's other names, e.g. "SKREST otherwise".
+  - Go to (G) finds read and write names.
+
+  Tests: all 99 round-trip cases pass, and the output still reassembles
+  byte-identically. The three new cases cover the opcode-based names and split
+  Access: lists (with xasm and MADS), and a project's own read name overriding
+  hardware.dop's. All 185 UI checks pass. The four new checks cover renaming a
+  read name without touching the ordinary name, the inspector, and undo. The
+  README explains read/write in the symbol-sets section.
+
+  I nearly broke hardware.dop on my first try. My conversion regex swallowed
+  every other line, which I caught and redid from the committed file. The final
+  diff changes exactly 36 lines plus two section headings.
+
+  tools/redact-transcript.py has appeared in the repo, untracked. It's not mine,
+  so I'll leave it out.
+
+  Want me to commit and push js/core.js, js/app.js, js/symbols.js,
+  symbols/hardware.dop, both tests and README.md?
+
+✻ Worked for 7m 34s · done 8:55 PM
+
+※ recap: We're building the web 6502 disassembler; I've added separate read and write names for hardware registers (lda RANDOM, sta SKREST), and all tests pass. Next: say whether to commit and push it.
+
+❯ Can you make the "view" dialog for hardware.dop show the read register names? 
+
+  Searched for 1 pattern (ctrl+o to expand)
+● The viewer skipped every comment-only line, and ;xdis read … lines look like
+  comments, so the read names never appeared. I'll list them as rows of type
+  read (or write):
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/app.js'; s=open(a).read()…)
+  ⎿  186
+     <span class="pass">PASS</span> the viewer lists read names —
+  ⎿  Updated js/app.js (+8 -0)
+      1382              const code = (semi >= 0 ? line.slice(0, semi) : l
+            ine).trim();
+      1383              const comment = semi >= 0 ? line.slice(semi + 1).
+            trim() : '';
+      1384              if (!code) {
+      1385 +                // names for reading or writing instructions 
+           +(";xdis read NAME=ADDR")                                     
+      1386 +                const rw = /^xdis\s+((?:read|write)\s+\S+)$/.
+           +exec(comment);                                               
+      1387 +                if (rw) {                                    
+      1388 +                    let d = null;                            
+      1389 +                    try { d = X.parseDirectiveLine(rw[1]); } 
+           +catch (e) { d = null; }                                      
+      1390 +                    if (d && d.name) rows.push({ d, comment: 
+           +`name where instructions ${d.type} it`, heading });          
+      1391 +                    continue;                                
+      1392 +                }                                            
+      1393                  // a comment-only line followed by a blank li
+            ne is a heading
+      1394                  if (comment && !/^xdis /.test(comment) && !/=
+            /.test(comment)) heading = comment;
+      1395                  continue;
+  ⎿  Updated test/ui-test.html (+7 -0)
+      507              irq && irq.querySelector('[data-symon]').checked);
+      508          doc.querySelector('#dlg button[value=ok]').click();
+      509          await sleep(20);
+      510 +        doc.querySelector('[data-viewsym="hardware.dop"]').cli
+          +ck();                                                         
+      511 +        for (let t = 0; t < 100 && !(doc.getElementById('dlg')
+          +.open && doc.getElementById('sv-table')); t++) await sleep(10)
+          +;                                                             
+      512 +        const rnd = rowOf('RANDOM'), skr = rowOf('SKREST');   
+      513 +        check('the viewer lists read names', rnd && rnd.queryS
+          +electorAll('td')[3].textContent === 'read' && /\$D20A/.test(rn
+          +d.textContent) &&                                             
+      514 +            skr && skr.querySelectorAll('td')[3].textContent =
+          +== 'data', rnd && rnd.textContent);                           
+      515 +        doc.querySelector('#dlg button[value=ok]').click();   
+      516 +        await sleep(20);                                      
+      517          const box = doc.querySelector('[data-sym="bbchw.dop"]'
+           );
+      518          box.checked = true;
+      519          box.dispatchEvent(new w.Event('change', { bubbles: tru
+           e }));
+  ⎿  (timeout 3m 20s)
+
+● All 186 UI checks pass, including the new one, which checks that RANDOM is
+  listed with type read at $D20A next to SKREST (type data). This is in the
+  working tree, not committed.
+
+  Cause: the view dialog skipped every comment-only line, and the ;xdis read …
+  lines look like comments. So the 36 read names never showed up.
+
+  Fix (js/app.js): the viewer now lists ;xdis read and ;xdis write lines as
+  rows. Each one shows:
+  - its name and address;
+  - the type read or write;
+  - the note "name where instructions read it" (or "write it");
+  - the section heading above it, so they appear under "GTIA Read" and "POKEY
+    Read".
+
+  They work like the set's other rows:
+  - the ● marks names this program uses;
+  - clicking a name goes to its address;
+  - the checkbox switches it off, which leaves that address with its ordinary
+    name only;
+  - the filter and Disable shown / Enable shown include them.
+
+  This and the read/write names change are both uncommitted. Want me to commit
+  and push them together?
+
+✻ Cooked for 34s · done 9:03 PM
+
+❯ yes, commit and push                                                          
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The push went through, but the remote was at 33a2b3a, not 393c7a2 where I last
+  left it. I'll check where that commit came from:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I committed the read/write names and the viewer change as 7a4cc52 and pushed
+  them to GitHub. Pages will rebuild in a minute or two.
+
+  The 33a2b3a on the remote is your own "Add development transcript" commit.
+  Mine went on top of it as a normal fast-forward, and local and remote main are
+  in sync.
+
+✻ Cooked for 16s · done 9:06 PM
+
+※ recap: You're building xdis, the interactive 6502 disassembler; the hardware read/write register names and the viewer listing them are committed and pushed to GitHub Pages. Next, try `lda RANDOM`-style names on the live site.
+
+❯ Just found that pressing "W" causes the page to crash. Totally unresponsive   
+  until "Error code: RESULT_CODE_HUNG"                                          
+
+● That sounds like an infinite loop in rendering rather than an exception. The
+  likeliest spot is where word data is drawn, so I'll look at that branch:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Found the bug: in the word-data branch, when the next byte can't share a line,
+  lineEnd returns a itself, causing b = a - 1 and the loop to re-enter at the
+  same byte, creating an infinite loop on single-byte or odd-length selections.
+  I'll verify this in node with a timeout.
+
+● Bash(export PATH=$PWD/.cache/node-v22.11.0-linux-x64/bin:$PATH && cat >
+      $CLAUDE_JOB_DIR/tmp/word.js <<'EOF'
+      const X = require('/home/lybrown/x/xdis/js/core.js');…)
+  ⎿  exit 124
+  ⎿  Updated tools/transcript-html.py (+12 -1)
+      31  BOX = '┌│├└╭╰┬┼┴─'
+      32  DIFF = re.compile(r'^\s+\d+\s+[+-]?\S?')
+      33  FOOTER = re.compile(r'^✻ (\S+) for ((?:\d+h ?)?(?:\d+m ?)?(?:\d
+          +s)?)(?: · done (?:(\w+day) )?(\d+):(\d+) ([AP]M))?')
+      34 +KEY = re.compile(r'^[A-Z][A-Za-z ]{0,18}: \S')                 
+      35  URL = re.compile(r'https?://[^\s<>"\')]+[^\s<>"\').,;:]')
+      36  DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+           'Saturday', 'Sunday']
+      37  
+     ...
+      65  
+      66      def flush():
+      67          if para:
+      67 -            out.append('<p>%s</p>' % inline(' '.join(para)))   
+      68 +            # "Key: value" records keep one key per line       
+      69 +            keys = KEY.match(para[0])                          
+      70 +            out.append('<p>%s</p>' % ''.join(                  
+      71 +                ('<br>' if keys and KEY.match(l) and j else ' '
+         + if j else '') + inline(l)                                     
+      72 +                for j, l in enumerate(para)))                  
+      73              para.clear()
+      74  
+      75      while i < len(lines):
+     ...
+      88              text = '\n'.join(block)
+      89              cls = 'out note' if 'Interrupted' in s else 'out'
+      90              out.append('<pre class="%s">%s</pre>' % (cls, esc(t
+          ext)))
+      91 +        elif set(s) == {'─'}:                                  
+      92 +            flush()                                            
+      93 +            out.append('<hr>')                                 
+      94 +            i += 1                                             
+      95          elif SUMMARY.match(s):
+      96              flush()
+      97              out.append('<div class="ran">%s</div>' % esc(s.repl
+          ace('(ctrl+o to expand)', '').strip()))
+     ...
+      311  .turn { padding: 18px 0 22px; border-bottom: 1px solid var(--l
+           ine); scroll-margin-top: 4px; }
+      312  .msg { margin: 10px 0; scroll-margin-top: 8px; }
+      313  .msg p { margin: 0 0 .6em; }
+      314 +.msg p, .li { overflow-wrap: anywhere; }                      
+      315 +.msg hr { border: 0; border-top: 1px solid var(--line); margin
+          +: .8em 0; }                                                   
+      316  .user { background: var(--user); border: 1px solid var(--line)
+           ; border-left: 3px solid var(--accent); border-radius: 8px; pa
+           dding: 10px 14px; }
+      317  .user.cmd { font-family: ui-monospace, monospace; font-size: 1
+           3px; padding: 6px 12px; }
+      318  .who { font-size: 12px; font-weight: 600; color: var(--accent)
+           ; margin-bottom: 4px; display: flex; gap: 8px; }
+  ⎿  (timeout 30s)
+
+● Confirmed the bug: a one-byte word $080E hangs the renderer and causes a
+  timeout. I'll fix this by only using the word branch when a full word fits on
+  the line, otherwise rendering the leftover byte as a plain dta $XX.
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/js/core.js'; s=open(a).read()…)
+  ⎿  word $080E 1 ms
+         dta $11                   ; 080E: 11
+         dta $22,$33,$44,$55       ; 080F: 22 33 44 55
+     … +9 lines (ctrl+o to expand)
+  ⎿  Updated js/core.js (+11 -3)
+      2675                      }
+      2676                      return b;
+      2677                  };
+      2678 +                // last byte of the whole words that fit on a
+           + line from a, or                                             
+      2679 +                // a - 1 when not even one does (an odd byte 
+           +left over: shown                                             
+      2680 +                // as a byte, or the loop would never move on
+           +)                                                            
+      2681 +                const wordsTo = () => {                      
+      2682 +                    if (a >= end || T.ilen[off + 1] || hasLab
+           +elDef(T, a + 1)) return a - 1;                               
+      2683 +                    const b = lineEnd(perLine * 2);          
+      2684 +                    return (b - a) % 2 === 0 ? b - 1 : b;    
+      2685 +                };                                           
+      2686 +                let wordEnd;                                 
+      2687                  if (bitjmp) {
+      2688                      dataLine(T, a, 1, [['dir', 'dta '], ['num
+            ', '$2C', undefined, a]], '<--- Bit Jump');
+      2689                      a++;
+     ...
+      2704                      const b = lineEnd(Math.max(1, opts.textPe
+            rLine | 0));
+      2705                      dataLine(T, a, b - a + 1, [['dir', 'dta '
+            ]].concat(textParts(data, off, b - start, a)));
+      2706                      a = b + 1;
+      2698 -                } else if (f === FMT.word && a < end && !T.il
+           -en[off + 1] && !hasLabelDef(T, a + 1)) {                     
+      2699 -                    let b = lineEnd(perLine * 2);            
+      2700 -                    if ((b - a) % 2 === 0) b--;              
+      2707 +                } else if (f === FMT.word && (wordEnd = words
+           +To()) > a) {                                                 
+      2708 +                    const b = wordEnd;                       
+      2709                      const parts = [['dir', 'dta ']];
+      2710                      for (let w = a; w < b; w += 2) {
+      2711                          if (w > a) parts.push(['pun', ',']);
+
+● All three cases now render correctly—single bytes produce dta $11 and odd
+  ranges include whole words plus dta $33. Next, I'll run regression cases,
+  including an odd byte preceding a different format.
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/test/roundtrip.js'; s=open(a).read()…)
+  ⎿  102
+     PASS word-odd-1 (8 lines, 0 ms): xasm: identical; unneeded 1/1: joint
+     removal ok; expect "dta $11  ": found
+     … +4 lines (ctrl+o to expand)
+  ⎿  Updated test/roundtrip.js (+11 -0)
+      325                  expect: ['lda NOISE', 'sta SKREST'], absent: [
+           'RANDOM'] },
+      326          ];
+      327      })(),
+      328 +    // words over an odd number of bytes: the byte left over i
+          +s shown as a                                                  
+      329 +    // byte (W on a single byte used to hang the renderer)    
+      330 +    ...(() => {                                               
+      331 +        const bytes = Uint8Array.from([0x01, 0x08, 0x0B, 0x08,
+          + 0x0A, 0x00, 0x9E, 0x32, 0x30, 0x36, 0x31, 0, 0, 0,           
+      332 +            0x60, 0x11, 0x22, 0x33, 0x44, 0x55]);             
+      333 +        return [                                              
+      334 +            { name: 'word-odd-1', type: 'prg', bytes, directiv
+          +es: ['word $080E'], expect: ['dta $11  '] },                  
+      335 +            { name: 'word-odd-3', type: 'prg', bytes, directiv
+          +es: ['word $080E+2'], expect: ['dta a($2211)', 'dta $33  '] },
+      336 +            { name: 'word-odd-before-text', type: 'prg', bytes
+          +, directives: ['word $080E+1', 'text $0810+1'], expect: ['dta 
+          +a($2211)', "dta c'3D'"] },                                    
+      337 +        ];                                                    
+      338 +    })(),                                                     
+      339      { name: 'car-abasic-tables', file: '/mnt/c/Users/USER/Dow
+           nloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/
+           hardware.dop'],
+      340        pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-
+           1]'] },
+      341      // project files; `relocate` applies the relocations xdis 
+           suggests
+  ⎿  Updated tools/transcript-html.py (+1 -1)
+      477    if (head) head.classList.toggle('hide', !any);
+      478  });
+      479  addEventListener('keydown', e => {
+      480 -  if (e.target.matches('input, textarea') || e.ctrlKey || e.me
+          -taKey || e.altKey) {                                          
+      480 +  if (e.target.matches?.('input, textarea') || e.ctrlKey || e.
+          +metaKey || e.altKey) {                                        
+      481      if (e.key === 'Escape') e.target.blur();
+      482      return;
+      483    }
+  ⎿  … 1 more file changed
+  ⎿  (timeout 10m)
+
+● Now a UI test that presses W with a single byte picked, the same path that
+  hung for you:
+
+● Bash(python3 - <<'EOF'
+      a='/home/lybrown/x/xdis/test/ui-test.html'; s=open(a).read()…)
+  ⎿  187 pass
+     <span class="pass">PASS</span> W on one byte renders it as a byte —
+       dta $E1
+     … +3 lines (ctrl+o to expand)
+  ⎿  Updated test/ui-test.html (+21 -0)
+      259          log('skip', 'no plain dta line found');
+      260      }
+      261  
+      262 +    // 9b2. W on a single picked byte (a word with nothing to 
+          +pair it with)                                                 
+      263 +    {                                                         
+      264 +        const wl = S.listing.lines.findIndex((l) => l.k === 'd
+          +ata' && l.n >= 3 && l.p[1] && /^dta \$/.test(l.p.map((p) => p[
+          +1]).join('').trim()));                                        
+      265 +        if (wl >= 0) {                                        
+      266 +            const WL = S.listing.lines[wl];                   
+      267 +            S.cur = S.anchor = wl;                            
+      268 +            key('ArrowRight');                       // pick t
+          +he line's second byte                                         
+      269 +            const picked = S.sub;                             
+      270 +            const nDirs = S.project.directives.length;        
+      271 +            key('w');                                         
+      272 +            await sleep(50);                                  
+      273 +            const li = S.listing.lines.findIndex((l) => l.s ==
+          += WL.s && l.a === picked);                                    
+      274 +            check('W on one byte renders it as a byte', S.proj
+          +ect.directives.length === nDirs + 1 && li >= 0 &&             
+      275 +                /^dta \$[0-9A-F]{2}$/.test(S.listing.lines[li]
+          +.p.map((p) => p[1]).join('').trim()),                         
+      276 +                li >= 0 && S.listing.lines[li].p.map((p) => p[
+          +1]).join(''));                                                
+      277 +            key('z', { ctrlKey: true });                      
+      278 +        } else {                                              
+      279 +            log('skip', 'no plain dta line for W');           
+      280 +        }                                                     
+      281 +    }                                                         
+      282 +                                                              
+      283      // 9c. edit an existing directive in place
+      284      doc.querySelector('[data-tab=directives]').click();
+      285      const di = S.project.directives.findIndex((d) => d.name ==
+           = 'my_routine');
+  ⎿  (timeout 10m)
+
+● Pressing W was hanging the page because of an infinite loop in how word data
+  is drawn. It's fixed, but not committed or pushed yet.
+
+  Cause: W on a single byte, or on an odd number of bytes, leaves one byte
+  marked as a word with no second byte to pair with. The drawing code works out
+  how many whole words fit on a line. When even one doesn't, it ended up just
+  before where it started and never moved on. So every redraw after that W
+  looped forever. I reproduced it in node: a one-byte word directive never
+  finished rendering.
+
+  Fix (js/core.js): the word branch is used only when at least one whole word
+  fits. A leftover odd byte is shown as a plain byte:
+  word $080E      →  dta $11
+  word $080E+2    →  dta a($2211)
+                     dta $33
+
+  Tests:
+  - Round-trip: all 102 cases pass. The three new ones cover a one-byte word, a
+    three-byte word, and an odd word range right before text.
+  - UI: all 187 checks pass in 2 out of 2 runs. The new one presses W with a
+    single byte picked, the path that hung for you, and checks the byte renders
+    as dta $E1.
+
+  If a saved project hits this, it may hang again as soon as it loads. The fix
+  stops that, so it'll open normally once this is live. The live site still has
+  the bug until this is pushed. Want me to commit and push it now?
+
+✻ Baked for 3m 28s · done 9:15 PM
+
+※ recap: You're building xdis, the web 6502 disassembler, and I just fixed the hang when pressing W on an odd number of bytes. Next: say yes and I'll commit and push the fix so the live site gets it.
+
+❯ yes, commit and push                                                          
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● I committed the fix for the W hang as f06efc6 and pushed it. The site at
+  https://lybrown.github.io/xdis/ has rebuilt, and its js/core.js contains the
+  fix.
+
+  A hard refresh (Ctrl+Shift+R) makes sure your browser loads the new version.
+  After that, W on a single byte or an odd selection shows the leftover byte as
+  a plain dta, and any saved project that was affected opens normally.
+
+✻ Brewed for 57s · done 9:28 PM
