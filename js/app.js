@@ -1383,11 +1383,11 @@
             const comment = semi >= 0 ? line.slice(semi + 1).trim() : '';
             if (!code) {
                 // names for reading or writing instructions (";xdis read NAME=ADDR")
-                const rw = /^xdis\s+((?:read|write)\s+\S+)$/.exec(comment);
+                const rw = /^xdis\s+((?:read|write)\s+\S+)(?:\s+;\s*(.*))?$/.exec(comment);
                 if (rw) {
                     let d = null;
                     try { d = X.parseDirectiveLine(rw[1]); } catch (e) { d = null; }
-                    if (d && d.name) rows.push({ d, comment: `name where instructions ${d.type} it`, heading });
+                    if (d && d.name) rows.push({ d, comment: rw[2] || `name where instructions ${d.type} it`, heading });
                     continue;
                 }
                 // a comment-only line followed by a blank line is a heading

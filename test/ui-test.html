@@ -535,6 +535,13 @@ function check(name, ok, detail) {
             skr && skr.querySelectorAll('td')[3].textContent === 'data', rnd && rnd.textContent);
         doc.querySelector('#dlg button[value=ok]').click();
         await sleep(20);
+        doc.querySelector('[data-viewsym="vbxe.dop"]').click();
+        for (let t = 0; t < 100 && !(doc.getElementById('dlg').open && doc.getElementById('sv-table')); t++) await sleep(10);
+        const cv = rowOf('CORE_VERSION');
+        check('the VBXE set lists its read names with descriptions', cv && cv.querySelectorAll('td')[3].textContent === 'read' &&
+            /\$D640/.test(cv.textContent) && /core type/.test(cv.textContent) && !!rowOf('VIDEO_CONTROL') && !!rowOf('MEMAC_BANK_SEL'));
+        doc.querySelector('#dlg button[value=ok]').click();
+        await sleep(20);
         const box = doc.querySelector('[data-sym="bbchw.dop"]');
         box.checked = true;
         box.dispatchEvent(new w.Event('change', { bubbles: true }));

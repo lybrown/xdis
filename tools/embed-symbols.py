@@ -10,13 +10,15 @@ groups = {
     'Atari 8-bit': ['hardware.dop', 'sys.dop'],
     'Atari XL/XE OS': ['atarixl.dop'],
     'Atari floating point, BASIC, DOS': ['atarifp.dop', 'basic.dop', 'dos.dop'],
+    'Atari VBXE at $D640': ['vbxe.dop'],
+    'Atari VBXE at $D740': ['vbxe7.dop'],
     'Commodore 64': ['6510.dop', 'vic.dop', 'sid.dop', 'cia.dop'],
     'BBC Micro': ['bbcmos.dop', 'bbchw.dop'],
     'BBC Micro MOS buffers': ['bbcmosbuf.dop'],
 }
 # Priority when several sets name the same thing: earlier wins. atarixl.dop
 # comes before sys.dop so XL/XE addresses replace 400/800 ones.
-order = ['atarixl.dop', 'hardware.dop', 'sys.dop', 'atarifp.dop', 'basic.dop', 'dos.dop',
+order = ['atarixl.dop', 'hardware.dop', 'sys.dop', 'atarifp.dop', 'basic.dop', 'dos.dop', 'vbxe.dop', 'vbxe7.dop',
          '6510.dop', 'vic.dop', 'sid.dop', 'cia.dop', 'bbcmos.dop', 'bbchw.dop', 'bbcmosbuf.dop']
 out = root / 'js' / 'symbols.js'
 out.write_text(

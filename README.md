@@ -79,6 +79,7 @@ Built-in symbol sets (under *Directives*) are the dis option files from
 | Set | Contents |
 | --- | --- |
 | `hardware.dop`, `sys.dop` | Atari hardware registers and 400/800 OS equates, including the cartridge header (`CARTCS`, `CART`, `CARTFG`, `CARTAD`) |
+| `vbxe.dop`, `vbxe7.dop` | VBXE (VideoBoard XE) FX core registers at `$D640` or `$D740` (`VIDEO_CONTROL`/`CORE_VERSION`, XDL and blitter addresses, palette, MEMAC), from the FX 1.26 programmer's manual via `tools/make-vbxe.py`; enable the one matching where the board is decoded |
 | `atarixl.dop` | XL/XE OS: locations added or moved by the 1200XL and XL/XE OS |
 | `atarifp.dop` | Floating point package registers, buffers and ROM routines |
 | `basic.dop` | Atari BASIC page zero and math routines |

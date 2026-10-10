@@ -550,7 +550,8 @@
             let line = raw;
             const ext = /^\s*;xdis\s+(.*)$/.exec(line);
             if (ext) {
-                line = ext[1];
+                // a read/write name may have a description after another ;
+                line = /^(read|write)\s/.test(ext[1]) ? ext[1].replace(/\s+;.*$/, '') : ext[1];
                 // off SET [NAMES]: the labels switched off in a symbol set
                 // (the whole list: none listed means all on)
                 const offm = /^off\s+(\S+)(?:\s+(.*))?$/.exec(line);
@@ -944,7 +945,7 @@
             if (img.type === 'prg' || sets.some((f) => /(6510|vic|sid|cia)\.dop$/.test(f))) return 'c64';
             if (sets.some((f) => /bbc/i.test(f))) return 'bbc';
             if (['xex', 'sap', 'car', 'cart'].includes(img.type) ||
-                sets.some((f) => /(hardware|sys|atarixl|atarifp|basic|dos)\.dop$/.test(f))) return 'atari';
+                sets.some((f) => /(hardware|sys|atarixl|atarifp|basic|dos|vbxe7?)\.dop$/.test(f))) return 'atari';
             return null;
         })();
 

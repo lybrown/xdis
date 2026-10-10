@@ -336,6 +336,20 @@ const cases = [
             { name: 'word-odd-before-text', type: 'prg', bytes, directives: ['word $080E+1', 'text $0810+1'], expect: ['dta a($2211)', "dta c'3D'"] },
         ];
     })(),
+    // VBXE registers: read and write names at $D640 (or $D740 with vbxe7.dop)
+    ...(() => {
+        const prog = (hi) => Uint8Array.from([0xFF, 0xFF, 0x00, 0x20, 0x0F, 0x20,
+            0xAD, 0x40, hi, 0xC9, 0x10, 0xD0, 0x05,          // lda CORE_VERSION / cmp #$10 / bne busy
+            0xA9, 0x01, 0x8D, 0x40, hi,                      // lda #1 / sta VIDEO_CONTROL
+            0xAD, 0x53, hi, 0x60,                            // busy: lda BLITTER_BUSY / rts
+            0xE0, 0x02, 0xE1, 0x02, 0x00, 0x20]);            // run $2000
+        return [
+            { name: 'vbxe', type: 'xex', bytes: prog(0xD6), include: ['symbols/vbxe.dop'],
+                expect: ['lda CORE_VERSION', 'sta VIDEO_CONTROL', 'lda BLITTER_BUSY', 'CORE_VERSION equ $D640', 'VIDEO_CONTROL equ $D640'] },
+            { name: 'vbxe7', type: 'xex', bytes: prog(0xD7), include: ['symbols/vbxe7.dop'],
+                expect: ['lda CORE_VERSION', 'sta VIDEO_CONTROL', 'CORE_VERSION equ $D740'] },
+        ];
+    })(),
     { name: 'car-abasic-tables', file: '/mnt/c/Users/lyren/Downloads/old/abasic.car', include: ['symbols/sys.dop', 'symbols/hardware.dop'],
       pointers: true, expect: ['dta <[lA558-1]', 'dta >[lA8B3-1]'] },
     // project files; `relocate` applies the relocations xdis suggests
